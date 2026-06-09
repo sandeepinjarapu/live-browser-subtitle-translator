@@ -1,0 +1,4 @@
+.DS_Store
+.hf-cache/
+.ollama-models/
+.venv/
