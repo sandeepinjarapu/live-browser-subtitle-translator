@@ -21,6 +21,11 @@ This project now uses a local translator on `http://127.0.0.1:5000` based on `He
 
 ### Run the local server
 
+Two options:
+
+1. Double-click [`start_local_server.command`](/Users/sandeepinjarapu/Documents/Live%20browser%20subtitle%20translator/start_local_server.command)
+2. Or run this in Terminal:
+
 ```bash
 source .venv/bin/activate
 export HF_HOME="$PWD/.hf-cache"
@@ -40,6 +45,8 @@ python local_translate_server.py
 - Keep Prime Video subtitles enabled while testing.
 - The extension reads the original subtitle line locally, hides the source line, and shows the translated overlay.
 - If the server is not running, the overlay will fall back to the original text.
+- A small status badge in the top-right corner shows whether the local translator is connected.
+- The Telugu subtitle overlay is larger now for TV viewing distance.
 
 ## What success looks like
 

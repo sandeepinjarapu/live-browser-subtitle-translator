@@ -11,6 +11,8 @@
     overlayHost: null,
     translationCache: new Map(),
     activeRequestId: 0,
+    subtitleSize: 36,
+    settingsOpen: false,
   };
 
   const box = document.createElement("div");
@@ -21,18 +23,59 @@
     "bottom: 7%",
     "transform: translateX(-50%)",
     "z-index: 2147483647",
-    "max-width: min(82vw, 920px)",
+    "max-width: min(88vw, 1040px)",
     "padding: 14px 18px",
     "border-radius: 12px",
     "background: rgba(0, 0, 0, 0.82)",
     "color: #fff",
-    "font: 600 22px/1.35 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    `font: 600 ${state.subtitleSize}px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`,
     "text-align: center",
     "white-space: pre-wrap",
     "pointer-events: none",
     "text-shadow: 0 1px 2px rgba(0,0,0,0.7)",
     "display: none",
   ].join(";");
+
+  const statusBadge = document.createElement("div");
+  statusBadge.id = "prime-subtitle-status";
+  statusBadge.style.cssText = [
+    "position: fixed",
+    "right: 14px",
+    "top: 14px",
+    "z-index: 2147483647",
+    "padding: 6px 10px",
+    "border-radius: 999px",
+    "font: 600 12px/1.2 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    "letter-spacing: 0.02em",
+    "background: rgba(0,0,0,0.72)",
+    "color: #fff",
+    "pointer-events: auto",
+    "opacity: 0.88",
+  ].join(";");
+  statusBadge.textContent = "Translator: checking...";
+
+  const settingsPanel = document.createElement("div");
+  settingsPanel.id = "prime-subtitle-settings";
+  settingsPanel.style.cssText = [
+    "position: fixed",
+    "right: 14px",
+    "top: 52px",
+    "z-index: 2147483647",
+    "min-width: 250px",
+    "padding: 12px 14px",
+    "border-radius: 14px",
+    "background: rgba(0,0,0,0.84)",
+    "color: #fff",
+    "font: 600 13px/1.35 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    "pointer-events: auto",
+    "display: none",
+    "box-shadow: 0 12px 30px rgba(0,0,0,0.35)",
+  ].join(";");
+  settingsPanel.innerHTML = `
+    <div style="margin-bottom: 10px; font-size: 13px;">Subtitle size: <span id="prime-subtitle-size-value"></span>px</div>
+    <input id="prime-subtitle-size-slider" type="range" min="20" max="48" step="1" style="width: 100%;">
+    <div style="margin-top: 10px; font-size: 12px; opacity: 0.8;">Click the badge to close.</div>
+  `;
 
   function ensureOverlayHost() {
     const mountRoot = document.fullscreenElement || document.documentElement;
@@ -56,6 +99,8 @@
     ].join(";");
     mountRoot.appendChild(host);
     host.appendChild(box);
+    host.appendChild(statusBadge);
+    host.appendChild(settingsPanel);
     state.overlayHost = host;
     return host;
   }
@@ -74,6 +119,26 @@
     }
     box.textContent = text;
     box.style.display = "block";
+  }
+
+  function applySubtitleSize(size) {
+    const next = Math.min(48, Math.max(20, Number(size) || 36));
+    state.subtitleSize = next;
+    box.style.font = `600 ${next}px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
+    const valueEl = settingsPanel.querySelector("#prime-subtitle-size-value");
+    const sliderEl = settingsPanel.querySelector("#prime-subtitle-size-slider");
+    if (valueEl) valueEl.textContent = String(next);
+    if (sliderEl && Number(sliderEl.value) !== next) sliderEl.value = String(next);
+  }
+
+  function toggleSettings(open) {
+    state.settingsOpen = typeof open === "boolean" ? open : !state.settingsOpen;
+    settingsPanel.style.display = state.settingsOpen ? "block" : "none";
+  }
+
+  function setStatus(text, ok) {
+    statusBadge.textContent = text;
+    statusBadge.style.background = ok ? "rgba(22, 120, 42, 0.82)" : "rgba(90, 20, 20, 0.82)";
   }
 
   async function translateToTelugu(text) {
@@ -102,6 +167,16 @@
       state.translationCache.set(normalized, translated);
     }
     return translated;
+  }
+
+  async function pingTranslator() {
+    try {
+      const res = await fetch("http://127.0.0.1:5000/health", { cache: "no-store" });
+      if (!res.ok) throw new Error(String(res.status));
+      setStatus("Translator: connected", true);
+    } catch {
+      setStatus("Translator: offline", false);
+    }
   }
 
   function candidateRoots() {
@@ -343,12 +418,30 @@
   });
 
   document.addEventListener("fullscreenchange", () => {
-    ensureOverlayHost();
+  ensureOverlayHost();
+  applySubtitleSize(state.subtitleSize);
+
+  statusBadge.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleSettings();
+  });
+
+  const slider = settingsPanel.querySelector("#prime-subtitle-size-slider");
+  const sizeValue = settingsPanel.querySelector("#prime-subtitle-size-value");
+  if (slider && sizeValue) {
+    slider.value = String(state.subtitleSize);
+    sizeValue.textContent = String(state.subtitleSize);
+    slider.addEventListener("input", (event) => {
+      applySubtitleSize(event.target.value);
+    });
+  }
     refresh();
   });
   window.addEventListener("resize", scheduleRead);
 
   refresh();
+  pingTranslator();
+  setInterval(pingTranslator, 5000);
   setInterval(() => {
     if (!state.subtitleRoot || !document.contains(state.subtitleRoot)) {
       refresh();
