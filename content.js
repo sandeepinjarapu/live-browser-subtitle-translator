@@ -2,6 +2,8 @@
   const state = {
     subtitleRoot: null,
     lastText: "",
+    lastNodeSignature: "",
+    hiddenNode: null,
     observer: null,
     rootObserver: null,
     retryTimer: null,
@@ -128,6 +130,81 @@
     return lines.join("\n");
   }
 
+  function nodePath(el) {
+    const parts = [];
+    let cur = el;
+    while (cur && parts.length < 8) {
+      let part = cur.tagName ? cur.tagName.toLowerCase() : "";
+      if (cur.id) part += `#${cur.id}`;
+      if (cur.className && typeof cur.className === "string") {
+        const cls = cur.className.trim().split(/\s+/).slice(0, 3).join(".");
+        if (cls) part += `.${cls}`;
+      }
+      if (part) parts.unshift(part);
+      cur = cur.parentElement;
+    }
+    return parts.join(" > ");
+  }
+
+  function hideNode(node) {
+    if (!node) return;
+    if (state.hiddenNode && state.hiddenNode !== node) {
+      state.hiddenNode.style.opacity = "";
+      state.hiddenNode.style.textShadow = "";
+    }
+    state.hiddenNode = node;
+    node.style.opacity = "0";
+    node.style.textShadow = "none";
+  }
+
+  function findSubtitleNode(root, text) {
+    if (!root || !text) return null;
+    const normTarget = text.replace(/\s+/g, " ").trim();
+    const nodes = [...root.querySelectorAll("div, span, p")];
+    let best = null;
+    let bestScore = -Infinity;
+    for (const el of nodes) {
+      const raw = (el.innerText || "").trim();
+      if (!raw) continue;
+      const norm = raw.replace(/\s+/g, " ").trim();
+      if (!norm.includes(normTarget) && !normTarget.includes(norm)) continue;
+      const rect = el.getBoundingClientRect();
+      const score =
+        norm.length * 2 +
+        Math.max(0, rect.width) * 0.2 +
+        Math.max(0, rect.height) * 0.5 +
+        (rect.top > window.innerHeight * 0.45 ? 80 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = el;
+      }
+    }
+    return best;
+  }
+
+  function findSmallestMatchingDescendant(root, text) {
+    if (!root || !text) return null;
+    const normTarget = text.replace(/\s+/g, " ").trim();
+    const nodes = [...root.querySelectorAll("div, span, p")];
+    let best = null;
+    let bestScore = Infinity;
+    for (const el of nodes) {
+      const raw = (el.innerText || "").trim();
+      if (!raw) continue;
+      const norm = raw.replace(/\s+/g, " ").trim();
+      if (!norm.includes(normTarget) && !normTarget.includes(norm)) continue;
+      const rect = el.getBoundingClientRect();
+      const area = Math.max(1, rect.width * rect.height);
+      const depthPenalty = nodePath(el).split(" > ").length * 25;
+      const score = area + depthPenalty;
+      if (score < bestScore) {
+        bestScore = score;
+        best = el;
+      }
+    }
+    return best;
+  }
+
   function extractText(root) {
     if (!root) return "";
     const text = narrowText((root.innerText || "").trim().replace(/\s+\n/g, "\n"));
@@ -172,6 +249,7 @@
     if (!text) {
       if (state.lastText) {
         state.lastText = "";
+        state.lastNodeSignature = "";
         show("");
       }
       return;
@@ -181,6 +259,18 @@
       state.lastText = text;
       log("subtitle", text);
       show(text);
+      const subtitleNode = findSmallestMatchingDescendant(state.subtitleRoot, text) || findSubtitleNode(state.subtitleRoot, text);
+      if (subtitleNode) {
+        const signature = nodePath(subtitleNode);
+        if (signature !== state.lastNodeSignature) {
+          state.lastNodeSignature = signature;
+          log("node", signature);
+          log("nodeText", (subtitleNode.innerText || "").trim());
+        }
+        if (subtitleNode.tagName === "SPAN" && /caption/i.test(subtitleNode.className || "")) {
+          hideNode(subtitleNode);
+        }
+      }
     }
   }
 
