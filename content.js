@@ -35,7 +35,13 @@
   ].join(";");
 
   function ensureOverlayHost() {
-    if (state.overlayHost && document.contains(state.overlayHost)) return state.overlayHost;
+    const mountRoot = document.fullscreenElement || document.documentElement;
+    if (state.overlayHost && document.contains(state.overlayHost)) {
+      if (state.overlayHost.parentElement !== mountRoot) {
+        mountRoot.appendChild(state.overlayHost);
+      }
+      return state.overlayHost;
+    }
     const host = document.createElement("div");
     host.id = "prime-subtitle-overlay-host";
     host.style.cssText = [
@@ -48,7 +54,7 @@
       "pointer-events: none",
       "overflow: visible",
     ].join(";");
-    document.documentElement.appendChild(host);
+    mountRoot.appendChild(host);
     host.appendChild(box);
     state.overlayHost = host;
     return host;
@@ -336,20 +342,11 @@
     subtree: true,
   });
 
-  document.addEventListener("fullscreenchange", refresh);
+  document.addEventListener("fullscreenchange", () => {
+    ensureOverlayHost();
+    refresh();
+  });
   window.addEventListener("resize", scheduleRead);
-
-  const fullscreenWatcher = new MutationObserver(() => {
-    const fsRoot = getFullscreenRoot();
-    if (fsRoot && state.overlayHost && !document.contains(state.overlayHost)) {
-      document.documentElement.appendChild(state.overlayHost);
-      state.overlayHost.appendChild(box);
-    }
-  });
-  fullscreenWatcher.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-  });
 
   refresh();
   setInterval(() => {
