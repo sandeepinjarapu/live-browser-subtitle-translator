@@ -12,6 +12,7 @@
     translationCache: new Map(),
     activeRequestId: 0,
     subtitleSize: 36,
+    translatorBackend: localStorage.getItem("prime-subtitle-backend") || "libre",
     settingsOpen: false,
   };
 
@@ -72,6 +73,11 @@
     "box-shadow: 0 12px 30px rgba(0,0,0,0.35)",
   ].join(";");
   settingsPanel.innerHTML = `
+    <div style="margin-bottom: 10px; font-size: 13px;">Translator backend:</div>
+    <div id="prime-subtitle-backend-options" style="display: flex; gap: 8px; margin-bottom: 12px;">
+      <button data-backend="libre" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">LibreTranslate</button>
+      <button data-backend="gemma" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">Gemma backup</button>
+    </div>
     <div style="margin-bottom: 10px; font-size: 13px;">Subtitle size: <span id="prime-subtitle-size-value"></span>px</div>
     <input id="prime-subtitle-size-slider" type="range" min="20" max="48" step="1" style="width: 100%;">
     <div style="margin-top: 10px; font-size: 12px; opacity: 0.8;">Click the badge to close.</div>
@@ -131,9 +137,20 @@
     if (sliderEl && Number(sliderEl.value) !== next) sliderEl.value = String(next);
   }
 
+  function updateBackendButtons() {
+    const buttons = settingsPanel.querySelectorAll("#prime-subtitle-backend-options button");
+    buttons.forEach((button) => {
+      const active = button.dataset.backend === state.translatorBackend;
+      button.style.background = active ? "rgba(24, 119, 242, 0.95)" : "rgba(255,255,255,0.16)";
+      button.style.color = "#fff";
+      button.style.boxShadow = active ? "0 0 0 1px rgba(255,255,255,0.08) inset" : "none";
+    });
+  }
+
   function toggleSettings(open) {
     state.settingsOpen = typeof open === "boolean" ? open : !state.settingsOpen;
     settingsPanel.style.display = state.settingsOpen ? "block" : "none";
+    if (state.settingsOpen) updateBackendButtons();
   }
 
   function setStatus(text, ok) {
@@ -141,12 +158,22 @@
     statusBadge.style.background = ok ? "rgba(22, 120, 42, 0.82)" : "rgba(90, 20, 20, 0.82)";
   }
 
-  async function translateToTelugu(text) {
+  function setTranslatorBackend(backend) {
+    state.translatorBackend = backend === "gemma" ? "gemma" : "libre";
+    localStorage.setItem("prime-subtitle-backend", state.translatorBackend);
+    state.translationCache.clear();
+    updateBackendButtons();
+    pingTranslator();
+    scheduleRead();
+  }
+
+  async function translateWithLibre(text) {
     const normalized = text.replace(/\s+/g, " ").trim();
     if (!normalized) return "";
 
-    if (state.translationCache.has(normalized)) {
-      return state.translationCache.get(normalized);
+    const cacheKey = `libre:${normalized}`;
+    if (state.translationCache.has(cacheKey)) {
+      return state.translationCache.get(cacheKey);
     }
 
     const response = await fetch("http://127.0.0.1:5000/translate", {
@@ -164,18 +191,67 @@
     const data = await response.json();
     const translated = (data && data.translated ? String(data.translated) : "").trim();
     if (translated) {
-      state.translationCache.set(normalized, translated);
+      state.translationCache.set(cacheKey, translated);
     }
     return translated;
   }
 
+  async function translateWithGemma(text) {
+    const normalized = text.replace(/\s+/g, " ").trim();
+    if (!normalized) return "";
+
+    const cacheKey = `gemma:${normalized}`;
+    if (state.translationCache.has(cacheKey)) {
+      return state.translationCache.get(cacheKey);
+    }
+
+    const response = await fetch("http://127.0.0.1:11434/api/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gemma4:e4b",
+        prompt: [
+          "Translate the following English subtitle into natural Telugu.",
+          "Return only the Telugu translation.",
+          "",
+          normalized,
+        ].join("\n"),
+        stream: false,
+        options: {
+          temperature: 0.2,
+          num_predict: 128,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`ollama returned ${response.status}`);
+    }
+
+    const data = await response.json();
+    const translated = (data && data.response ? String(data.response) : "").trim();
+    if (translated) {
+      state.translationCache.set(cacheKey, translated);
+    }
+    return translated;
+  }
+
+  async function translateToTelugu(text) {
+    return state.translatorBackend === "gemma" ? translateWithGemma(text) : translateWithLibre(text);
+  }
+
   async function pingTranslator() {
     try {
-      const res = await fetch("http://127.0.0.1:5000/health", { cache: "no-store" });
+      const url = state.translatorBackend === "gemma"
+        ? "http://127.0.0.1:11434/api/tags"
+        : "http://127.0.0.1:5000/health";
+      const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) throw new Error(String(res.status));
-      setStatus("Translator: connected", true);
+      setStatus(state.translatorBackend === "gemma" ? "Translator: Gemma connected" : "Translator: connected", true);
     } catch {
-      setStatus("Translator: offline", false);
+      setStatus(state.translatorBackend === "gemma" ? "Translator: Gemma offline" : "Translator: offline", false);
     }
   }
 
@@ -418,12 +494,18 @@
   });
 
   document.addEventListener("fullscreenchange", () => {
-  ensureOverlayHost();
-  applySubtitleSize(state.subtitleSize);
-
+    ensureOverlayHost();
+    applySubtitleSize(state.subtitleSize);
+    refresh();
+  });
   statusBadge.addEventListener("click", (event) => {
     event.stopPropagation();
     toggleSettings();
+  });
+
+  const backendButtons = settingsPanel.querySelectorAll("#prime-subtitle-backend-options button");
+  backendButtons.forEach((button) => {
+    button.addEventListener("click", () => setTranslatorBackend(button.dataset.backend));
   });
 
   const slider = settingsPanel.querySelector("#prime-subtitle-size-slider");
@@ -435,8 +517,7 @@
       applySubtitleSize(event.target.value);
     });
   }
-    refresh();
-  });
+  updateBackendButtons();
   window.addEventListener("resize", scheduleRead);
 
   refresh();
