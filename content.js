@@ -2,12 +2,15 @@
   const state = {
     subtitleRoot: null,
     lastText: "",
+    lastTranslatedText: "",
     lastNodeSignature: "",
     hiddenNode: null,
     observer: null,
     rootObserver: null,
     retryTimer: null,
     overlayHost: null,
+    translationCache: new Map(),
+    activeRequestId: 0,
   };
 
   const box = document.createElement("div");
@@ -65,6 +68,34 @@
     }
     box.textContent = text;
     box.style.display = "block";
+  }
+
+  async function translateToTelugu(text) {
+    const normalized = text.replace(/\s+/g, " ").trim();
+    if (!normalized) return "";
+
+    if (state.translationCache.has(normalized)) {
+      return state.translationCache.get(normalized);
+    }
+
+    const response = await fetch("http://127.0.0.1:5000/translate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text: normalized }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`translation server returned ${response.status}`);
+    }
+
+    const data = await response.json();
+    const translated = (data && data.translated ? String(data.translated) : "").trim();
+    if (translated) {
+      state.translationCache.set(normalized, translated);
+    }
+    return translated;
   }
 
   function candidateRoots() {
@@ -249,6 +280,7 @@
     if (!text) {
       if (state.lastText) {
         state.lastText = "";
+        state.lastTranslatedText = "";
         state.lastNodeSignature = "";
         show("");
       }
@@ -258,7 +290,22 @@
     if (text !== state.lastText) {
       state.lastText = text;
       log("subtitle", text);
-      show(text);
+      const requestId = ++state.activeRequestId;
+      show("…");
+      translateToTelugu(text)
+        .then((translated) => {
+          if (requestId !== state.activeRequestId) return;
+          const output = translated || text;
+          state.lastTranslatedText = output;
+          show(output);
+          log("translation", output);
+        })
+        .catch((error) => {
+          if (requestId !== state.activeRequestId) return;
+          state.lastTranslatedText = text;
+          show(text);
+          log("translationError", String(error));
+        });
       const subtitleNode = findSmallestMatchingDescendant(state.subtitleRoot, text) || findSubtitleNode(state.subtitleRoot, text);
       if (subtitleNode) {
         const signature = nodePath(subtitleNode);
