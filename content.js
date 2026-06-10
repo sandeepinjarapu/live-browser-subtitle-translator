@@ -499,8 +499,8 @@
         state.lastTranslatedText = "";
         state.lastNodeSignature = "";
         // Linger so the viewer has time to finish reading; a new line cancels this.
-        // Scale with line length: ~100ms per character, between 2.5s and 6s.
-        const lingerMs = Math.min(6000, Math.max(2500, (box.textContent || "").length * 100));
+        // Scale with line length: ~90ms per character, between 2s and 5s.
+        const lingerMs = Math.min(5000, Math.max(2000, (box.textContent || "").length * 90));
         clearTimeout(state.clearTimer);
         state.clearTimer = setTimeout(() => show(""), lingerMs);
       }
@@ -544,7 +544,7 @@
           if (requestId !== state.activeRequestId) return;
           // Throttle so the overlay grows in calm steps instead of per token.
           const now = Date.now();
-          if (now - lastPartialAt < 250) return;
+          if (now - lastPartialAt < 200) return;
           lastPartialAt = now;
           show(partial);
         };
