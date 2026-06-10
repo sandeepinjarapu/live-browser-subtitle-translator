@@ -34,6 +34,22 @@ export HF_HUB_ENABLE_HF_TRANSFER=0
 python local_translate_server.py
 ```
 
+## Gemma backend (Ollama)
+
+The settings panel (click the status badge) can switch translation to a local Gemma model served by Ollama on `http://127.0.0.1:11434`, or to a hybrid mode that shows the LibreTranslate result instantly and swaps in Gemma's when ready.
+
+Requirements:
+
+1. Install the [Ollama](https://ollama.com) app and pull a model: `ollama pull gemma4:e2b-it-qat` (4.3 GB, fast) and/or `ollama pull gemma4:e4b` (9.6 GB, bigger).
+2. Ollama must allow browser requests from Prime Video origins, or it answers 403 and the badge shows "Gemma offline":
+
+```bash
+launchctl setenv OLLAMA_ORIGINS "https://www.primevideo.com,https://*.primevideo.com,https://*.amazon.com,https://*.amazon.in"
+# then restart the Ollama app
+```
+
+`launchctl setenv` does not survive a reboot. `start_local_server.command` sets it (and restarts Ollama if needed) on every start, so using the start script is enough.
+
 ### Current disk usage
 
 - `.venv`: about `498 MB`
