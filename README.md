@@ -23,7 +23,7 @@ This project now uses a local translator on `http://127.0.0.1:5000` based on `He
 
 Two options:
 
-1. Double-click [`start_local_server.command`](/Users/sandeepinjarapu/Documents/Live%20browser%20subtitle%20translator/start_local_server.command)
+1. Double-click [`start_local_server.command`](start_local_server.command)
 2. Or run this in Terminal:
 
 ```bash

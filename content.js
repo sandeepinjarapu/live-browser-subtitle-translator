@@ -8,6 +8,7 @@
     observer: null,
     rootObserver: null,
     retryTimer: null,
+    clearTimer: null,
     overlayHost: null,
     translationCache: new Map(),
     activeRequestId: 0,
@@ -218,7 +219,7 @@
     return translated;
   }
 
-  async function translateWithGemma(text) {
+  async function translateWithGemma(text, onPartial) {
     const normalized = text.replace(/\s+/g, " ").trim();
     if (!normalized) return "";
 
@@ -241,7 +242,7 @@
           "",
           normalized,
         ].join("\n"),
-        stream: false,
+        stream: true,
         keep_alive: "30m",
         options: {
           temperature: 0.2,
@@ -254,8 +255,29 @@
       throw new Error(`ollama returned ${response.status}`);
     }
 
-    const data = await response.json();
-    const translated = (data && data.response ? String(data.response) : "").trim();
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let accumulated = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n");
+      buffer = chunks.pop();
+      for (const chunk of chunks) {
+        if (!chunk.trim()) continue;
+        try {
+          const data = JSON.parse(chunk);
+          if (data.response) accumulated += data.response;
+        } catch {
+          // ignore partial JSON
+        }
+      }
+      if (accumulated && onPartial) onPartial(accumulated.trim());
+    }
+
+    const translated = accumulated.trim();
     if (translated) {
       state.translationCache.set(cacheKey, translated);
     }
@@ -476,13 +498,16 @@
         state.lastText = "";
         state.lastTranslatedText = "";
         state.lastNodeSignature = "";
-        show("");
+        // Linger so the viewer has time to finish reading; a new line cancels this.
+        clearTimeout(state.clearTimer);
+        state.clearTimer = setTimeout(() => show(""), 800);
       }
       return;
     }
 
     if (text !== state.lastText) {
       state.lastText = text;
+      clearTimeout(state.clearTimer);
       log("subtitle", text);
       const requestId = ++state.activeRequestId;
       show("…");
@@ -511,6 +536,17 @@
           .catch((error) => {
             log("translationError", String(error));
           });
+      } else if (state.translatorBackend === "gemma") {
+        const onPartial = (partial) => {
+          if (requestId !== state.activeRequestId) return;
+          show(partial);
+        };
+        translateWithGemma(text, onPartial)
+          .then(applyTranslation)
+          .catch((error) => {
+            applyTranslation("");
+            log("translationError", String(error));
+          });
       } else {
         translateToTelugu(text)
           .then(applyTranslation)
@@ -536,7 +572,7 @@
 
   function scheduleRead() {
     clearTimeout(state.retryTimer);
-    state.retryTimer = setTimeout(read, 75);
+    state.retryTimer = setTimeout(read, 16);
   }
 
   state.rootObserver = new MutationObserver(() => {
