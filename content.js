@@ -11,8 +11,9 @@
     overlayHost: null,
     translationCache: new Map(),
     activeRequestId: 0,
-    subtitleSize: 36,
+    subtitleSize: Number(localStorage.getItem("prime-subtitle-size")) || 36,
     translatorBackend: localStorage.getItem("prime-subtitle-backend") || "libre",
+    gemmaModel: localStorage.getItem("prime-subtitle-gemma-model") || "gemma4:e2b-it-qat",
     settingsOpen: false,
   };
 
@@ -77,6 +78,12 @@
     <div id="prime-subtitle-backend-options" style="display: flex; gap: 8px; margin-bottom: 12px;">
       <button data-backend="libre" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">LibreTranslate</button>
       <button data-backend="gemma" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">Gemma backup</button>
+      <button data-backend="hybrid" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">Hybrid</button>
+    </div>
+    <div style="margin-bottom: 10px; font-size: 13px;">Gemma model:</div>
+    <div id="prime-subtitle-gemma-options" style="display: flex; gap: 8px; margin-bottom: 12px;">
+      <button data-gemma-model="gemma4:e2b-it-qat" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">e2b (fast)</button>
+      <button data-gemma-model="gemma4:e4b" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">e4b (big)</button>
     </div>
     <div style="margin-bottom: 10px; font-size: 13px;">Subtitle size: <span id="prime-subtitle-size-value"></span>px</div>
     <input id="prime-subtitle-size-slider" type="range" min="20" max="48" step="1" style="width: 100%;">
@@ -130,6 +137,7 @@
   function applySubtitleSize(size) {
     const next = Math.min(48, Math.max(20, Number(size) || 36));
     state.subtitleSize = next;
+    localStorage.setItem("prime-subtitle-size", String(next));
     box.style.font = `600 ${next}px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
     const valueEl = settingsPanel.querySelector("#prime-subtitle-size-value");
     const sliderEl = settingsPanel.querySelector("#prime-subtitle-size-slider");
@@ -145,6 +153,20 @@
       button.style.color = "#fff";
       button.style.boxShadow = active ? "0 0 0 1px rgba(255,255,255,0.08) inset" : "none";
     });
+    const modelButtons = settingsPanel.querySelectorAll("#prime-subtitle-gemma-options button");
+    modelButtons.forEach((button) => {
+      const active = button.dataset.gemmaModel === state.gemmaModel;
+      button.style.background = active ? "rgba(24, 119, 242, 0.95)" : "rgba(255,255,255,0.16)";
+      button.style.color = "#fff";
+      button.style.boxShadow = active ? "0 0 0 1px rgba(255,255,255,0.08) inset" : "none";
+    });
+  }
+
+  function setGemmaModel(model) {
+    state.gemmaModel = model;
+    localStorage.setItem("prime-subtitle-gemma-model", model);
+    updateBackendButtons();
+    scheduleRead();
   }
 
   function toggleSettings(open) {
@@ -159,7 +181,7 @@
   }
 
   function setTranslatorBackend(backend) {
-    state.translatorBackend = backend === "gemma" ? "gemma" : "libre";
+    state.translatorBackend = ["gemma", "hybrid"].includes(backend) ? backend : "libre";
     localStorage.setItem("prime-subtitle-backend", state.translatorBackend);
     state.translationCache.clear();
     updateBackendButtons();
@@ -200,7 +222,7 @@
     const normalized = text.replace(/\s+/g, " ").trim();
     if (!normalized) return "";
 
-    const cacheKey = `gemma:${normalized}`;
+    const cacheKey = `gemma:${state.gemmaModel}:${normalized}`;
     if (state.translationCache.has(cacheKey)) {
       return state.translationCache.get(cacheKey);
     }
@@ -211,7 +233,8 @@
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gemma4:e4b",
+        model: state.gemmaModel,
+        think: false,
         prompt: [
           "Translate the following English subtitle into natural Telugu.",
           "Return only the Telugu translation.",
@@ -219,6 +242,7 @@
           normalized,
         ].join("\n"),
         stream: false,
+        keep_alive: "30m",
         options: {
           temperature: 0.2,
           num_predict: 128,
@@ -243,12 +267,25 @@
   }
 
   async function pingTranslator() {
-    try {
-      const url = state.translatorBackend === "gemma"
-        ? "http://127.0.0.1:11434/api/tags"
-        : "http://127.0.0.1:5000/health";
+    const check = async (url) => {
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) throw new Error(String(res.status));
+    };
+    const libreUrl = "http://127.0.0.1:5000/health";
+    const gemmaUrl = "http://127.0.0.1:11434/api/tags";
+    if (state.translatorBackend === "hybrid") {
+      const [libreOk, gemmaOk] = await Promise.all([
+        check(libreUrl).then(() => true, () => false),
+        check(gemmaUrl).then(() => true, () => false),
+      ]);
+      if (libreOk && gemmaOk) setStatus("Translator: hybrid connected", true);
+      else if (libreOk) setStatus("Translator: Gemma offline", false);
+      else if (gemmaOk) setStatus("Translator: Libre offline", false);
+      else setStatus("Translator: offline", false);
+      return;
+    }
+    try {
+      await check(state.translatorBackend === "gemma" ? gemmaUrl : libreUrl);
       setStatus(state.translatorBackend === "gemma" ? "Translator: Gemma connected" : "Translator: connected", true);
     } catch {
       setStatus(state.translatorBackend === "gemma" ? "Translator: Gemma offline" : "Translator: offline", false);
@@ -449,20 +486,39 @@
       log("subtitle", text);
       const requestId = ++state.activeRequestId;
       show("…");
-      translateToTelugu(text)
-        .then((translated) => {
-          if (requestId !== state.activeRequestId) return;
-          const output = translated || text;
-          state.lastTranslatedText = output;
-          show(output);
-          log("translation", output);
-        })
-        .catch((error) => {
-          if (requestId !== state.activeRequestId) return;
-          state.lastTranslatedText = text;
-          show(text);
-          log("translationError", String(error));
-        });
+      const applyTranslation = (translated) => {
+        if (requestId !== state.activeRequestId) return;
+        const output = translated || text;
+        state.lastTranslatedText = output;
+        show(output);
+        log("translation", output);
+      };
+      if (state.translatorBackend === "hybrid") {
+        let gemmaDone = false;
+        translateWithLibre(text)
+          .then((translated) => {
+            if (!gemmaDone) applyTranslation(translated);
+          })
+          .catch((error) => {
+            if (!gemmaDone) applyTranslation("");
+            log("translationError", String(error));
+          });
+        translateWithGemma(text)
+          .then((translated) => {
+            gemmaDone = true;
+            applyTranslation(translated);
+          })
+          .catch((error) => {
+            log("translationError", String(error));
+          });
+      } else {
+        translateToTelugu(text)
+          .then(applyTranslation)
+          .catch((error) => {
+            applyTranslation("");
+            log("translationError", String(error));
+          });
+      }
       const subtitleNode = findSmallestMatchingDescendant(state.subtitleRoot, text) || findSubtitleNode(state.subtitleRoot, text);
       if (subtitleNode) {
         const signature = nodePath(subtitleNode);
@@ -506,6 +562,11 @@
   const backendButtons = settingsPanel.querySelectorAll("#prime-subtitle-backend-options button");
   backendButtons.forEach((button) => {
     button.addEventListener("click", () => setTranslatorBackend(button.dataset.backend));
+  });
+
+  const gemmaModelButtons = settingsPanel.querySelectorAll("#prime-subtitle-gemma-options button");
+  gemmaModelButtons.forEach((button) => {
+    button.addEventListener("click", () => setGemmaModel(button.dataset.gemmaModel));
   });
 
   const slider = settingsPanel.querySelector("#prime-subtitle-size-slider");
