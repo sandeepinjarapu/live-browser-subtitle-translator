@@ -27,8 +27,8 @@ Two options:
 2. Or run this in Terminal:
 
 ```bash
-source .venv/bin/activate
-export HF_HOME="$PWD/.hf-cache"
+source .venv.nosync/bin/activate
+export HF_HOME="$PWD/.hf-cache.nosync"
 export HF_HUB_DISABLE_XET=1
 export HF_HUB_ENABLE_HF_TRANSFER=0
 python local_translate_server.py
@@ -52,8 +52,10 @@ launchctl setenv OLLAMA_ORIGINS "https://www.primevideo.com,https://*.primevideo
 
 ### Current disk usage
 
-- `.venv`: about `498 MB`
-- `.hf-cache`: about `592 MB`
+- `.venv.nosync`: about `498 MB`
+- `.hf-cache.nosync`: about `592 MB`
+
+The heavy local folders (`.ollama-models.nosync`, `.hf-cache.nosync`, `.venv.nosync`) use a `.nosync` suffix so iCloud Drive skips them.
 - total local translation footprint: about `1.1 GB`
 
 ## Notes

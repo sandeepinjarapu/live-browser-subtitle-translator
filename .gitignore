@@ -2,3 +2,5 @@
 .hf-cache/
 .ollama-models/
 .venv/
+*.nosync/
+.venv.broken-old/
