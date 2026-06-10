@@ -499,8 +499,10 @@
         state.lastTranslatedText = "";
         state.lastNodeSignature = "";
         // Linger so the viewer has time to finish reading; a new line cancels this.
+        // Scale with line length: ~70ms per character, between 1.5s and 4s.
+        const lingerMs = Math.min(4000, Math.max(1500, (box.textContent || "").length * 70));
         clearTimeout(state.clearTimer);
-        state.clearTimer = setTimeout(() => show(""), 800);
+        state.clearTimer = setTimeout(() => show(""), lingerMs);
       }
       return;
     }
@@ -537,8 +539,13 @@
             log("translationError", String(error));
           });
       } else if (state.translatorBackend === "gemma") {
+        let lastPartialAt = 0;
         const onPartial = (partial) => {
           if (requestId !== state.activeRequestId) return;
+          // Throttle so the overlay grows in calm steps instead of per token.
+          const now = Date.now();
+          if (now - lastPartialAt < 150) return;
+          lastPartialAt = now;
           show(partial);
         };
         translateWithGemma(text, onPartial)
