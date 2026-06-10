@@ -87,7 +87,7 @@
       <button data-gemma-model="gemma4:e4b" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">e4b (big)</button>
     </div>
     <div style="margin-bottom: 10px; font-size: 13px;">Subtitle size: <span id="prime-subtitle-size-value"></span>px</div>
-    <input id="prime-subtitle-size-slider" type="range" min="20" max="48" step="1" style="width: 100%;">
+    <input id="prime-subtitle-size-slider" type="range" min="20" max="60" step="1" style="width: 100%;">
     <div style="margin-top: 10px; font-size: 12px; opacity: 0.8;">Click the badge to close.</div>
   `;
 
@@ -136,7 +136,7 @@
   }
 
   function applySubtitleSize(size) {
-    const next = Math.min(48, Math.max(20, Number(size) || 36));
+    const next = Math.min(60, Math.max(20, Number(size) || 36));
     state.subtitleSize = next;
     localStorage.setItem("prime-subtitle-size", String(next));
     box.style.font = `600 ${next}px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
