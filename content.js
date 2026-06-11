@@ -25,6 +25,7 @@
     recentCommitted: [],
     lastCaptionTextAt: Date.now(),
     captionHint: "",
+    rollingEmptySince: 0,
     warm: new Map(),
     warmNextSrc: "",
     warmTimer: null,
@@ -586,6 +587,14 @@
     }
     if (siteAdapter && siteAdapter.captionsDisabled && siteAdapter.captionsDisabled()) {
       state.captionHint = "turn on subtitles in the player";
+      // Captions are explicitly off — no linger, exit now.
+      if (state.rollingLines.length || box.textContent) {
+        clearTimeout(state.clearTimer);
+        state.rollingLines = [];
+        state.rollingPending = "";
+        clearWarm();
+        show("");
+      }
     } else if (Date.now() - state.lastCaptionTextAt > 20000) {
       state.captionHint = "no subtitles found — is CC on?";
     }
@@ -909,7 +918,11 @@
 
   function readRolling(text) {
     if (!text) {
-      if (state.rollingPending || state.rollingLines.length) {
+      // One-shot on the transition to empty: re-entering this branch while
+      // the linger is pending must NOT re-arm the timer (the 1.5s refresh
+      // interval would otherwise reset it forever).
+      if (!state.rollingEmptySince && (state.rollingPending || state.rollingLines.length)) {
+        state.rollingEmptySince = Date.now();
         state.rollingPending = "";
         clearWarm();
         clearTimeout(state.stabilizeTimer);
@@ -922,6 +935,7 @@
       }
       return;
     }
+    state.rollingEmptySince = 0;
     clearTimeout(state.clearTimer);
     if (document.hidden) {
       show("");
