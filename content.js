@@ -173,6 +173,7 @@
     ".shaka-text-container,",
     ".atvwebplayersdk-captions-text,",
     ".ytp-caption-window-container,",
+    ".player-timedtext,",
     ".atvwebplayersdk-caption {",
     "  opacity: 0 !important;",
     "}",
@@ -664,6 +665,10 @@
       roots: [".shaka-text-container"],
     },
     {
+      hosts: ["netflix.com"],
+      roots: [".player-timedtext"],
+    },
+    {
       hosts: ["youtube.com"],
       roots: [".ytp-caption-window-container"],
       // Precise "subtitles are off" signal: YT's CC button exposes its state.
@@ -753,7 +758,7 @@
     for (const el of roots) {
       const text = (el.innerText || "").trim();
       const score =
-        (/caption|shaka-text/i.test(el.className || "") ? 10 : 0) +
+        (/caption|shaka-text|timedtext/i.test(el.className || "") ? 10 : 0) +
         (text.length > 0 ? 5 : 0) +
         (el.querySelectorAll("*").length > 0 ? 2 : 0) +
         (el.getBoundingClientRect().top > window.innerHeight * 0.4 ? 2 : 0);
@@ -768,7 +773,7 @@
       state.subtitleRoot &&
       document.contains(state.subtitleRoot) &&
       best !== state.subtitleRoot &&
-      !/caption|shaka-text/i.test(best && best.className || "")
+      !/caption|shaka-text|timedtext/i.test(best && best.className || "")
     ) {
       return state.subtitleRoot;
     }
