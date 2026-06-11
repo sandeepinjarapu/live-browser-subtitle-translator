@@ -247,6 +247,20 @@
     scheduleRead();
   }
 
+  // All backend calls go through the background service worker: content-script
+  // fetches run under the page's CSP, and some OTTs (Hotstar) block localhost.
+  function bgFetch(url, init) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ type: "fetch", url, init }, (res) => {
+        if (chrome.runtime.lastError || !res) {
+          reject(new Error(chrome.runtime.lastError ? chrome.runtime.lastError.message : "no response"));
+          return;
+        }
+        resolve(res);
+      });
+    });
+  }
+
   async function translateWithLibre(text) {
     const normalized = text.replace(/\s+/g, " ").trim();
     if (!normalized) return "";
@@ -256,7 +270,7 @@
       return state.translationCache.get(cacheKey);
     }
 
-    const response = await fetch("http://127.0.0.1:5000/translate", {
+    const response = await bgFetch("http://127.0.0.1:5000/translate", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -268,7 +282,7 @@
       throw new Error(`translation server returned ${response.status}`);
     }
 
-    const data = await response.json();
+    const data = JSON.parse(response.body);
     const translated = (data && data.translated ? String(data.translated) : "").trim();
     if (translated) {
       state.translationCache.set(cacheKey, translated);
@@ -285,7 +299,7 @@
       return state.translationCache.get(cacheKey);
     }
 
-    const response = await fetch("http://127.0.0.1:11434/api/generate", {
+    const init = {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -307,33 +321,45 @@
           num_predict: 128,
         },
       }),
-    });
+    };
 
-    if (!response.ok) {
-      throw new Error(`ollama returned ${response.status}`);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let accumulated = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const chunks = buffer.split("\n");
-      buffer = chunks.pop();
-      for (const chunk of chunks) {
-        if (!chunk.trim()) continue;
-        try {
-          const data = JSON.parse(chunk);
-          if (data.response) accumulated += data.response;
-        } catch {
-          // ignore partial JSON
+    const accumulated = await new Promise((resolve, reject) => {
+      const port = chrome.runtime.connect({ name: "stream" });
+      let buffer = "";
+      let acc = "";
+      let settled = false;
+      port.onDisconnect.addListener(() => {
+        if (!settled) reject(new Error("stream port disconnected"));
+      });
+      port.onMessage.addListener((msg) => {
+        if (msg.error) {
+          settled = true;
+          port.disconnect();
+          reject(new Error(`ollama: ${msg.error}`));
+          return;
         }
-      }
-      if (accumulated && onPartial) onPartial(accumulated.trim());
-    }
+        if (msg.done) {
+          settled = true;
+          port.disconnect();
+          resolve(acc);
+          return;
+        }
+        buffer += msg.chunk;
+        const chunks = buffer.split("\n");
+        buffer = chunks.pop();
+        for (const chunk of chunks) {
+          if (!chunk.trim()) continue;
+          try {
+            const data = JSON.parse(chunk);
+            if (data.response) acc += data.response;
+          } catch {
+            // ignore partial JSON
+          }
+        }
+        if (acc && onPartial) onPartial(acc.trim());
+      });
+      port.postMessage({ url: "http://127.0.0.1:11434/api/generate", init });
+    });
 
     const translated = cleanTranslation(accumulated);
     if (translated) {
@@ -348,7 +374,7 @@
 
   async function pingTranslator() {
     const check = async (url) => {
-      const res = await fetch(url, { cache: "no-store" });
+      const res = await bgFetch(url, { cache: "no-store" });
       if (!res.ok) throw new Error(String(res.status));
     };
     const libreUrl = "http://127.0.0.1:5000/health";
