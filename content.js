@@ -224,6 +224,40 @@
     }
   }
 
+  // Live cross-tab settings sync: another tab changing a setting updates
+  // this one immediately (each tab otherwise only reads storage at load).
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "sync") return;
+      let translationAffected = false;
+      if (changes.translatorBackend && changes.translatorBackend.newValue !== state.translatorBackend) {
+        state.translatorBackend = changes.translatorBackend.newValue;
+        translationAffected = true;
+      }
+      if (changes.gemmaModel && changes.gemmaModel.newValue !== state.gemmaModel) {
+        state.gemmaModel = changes.gemmaModel.newValue;
+        translationAffected = true;
+      }
+      if (changes.targetLanguage && changes.targetLanguage.newValue !== state.targetLanguage) {
+        state.targetLanguage = changes.targetLanguage.newValue;
+        const languageSelect = settingsPanel.querySelector("#prime-subtitle-language");
+        if (languageSelect) languageSelect.value = state.targetLanguage;
+        translationAffected = true;
+      }
+      if (changes.subtitleSize && Number(changes.subtitleSize.newValue) !== state.subtitleSize) {
+        applySubtitleSize(changes.subtitleSize.newValue);
+      }
+      if (translationAffected) {
+        updateBackendButtons();
+        pingTranslator();
+        state.lastText = "";
+        scheduleRead();
+      }
+    });
+  } catch {
+    // chrome.storage unavailable (extension reloaded out from under us)
+  }
+
   function cleanTranslation(text) {
     let cleaned = text.trim().replace(/^(here(?:'|’)s the translation:?|translation:?)\s*/i, "");
     if (
@@ -650,6 +684,13 @@
     if (text !== state.lastText) {
       state.lastText = text;
       clearTimeout(state.clearTimer);
+      // Hidden tabs don't translate: their overlay is invisible, and skipping
+      // keeps the backends free for the tab the user is actually watching.
+      // On refocus the visibilitychange handler re-reads the current line.
+      if (document.hidden) {
+        show("");
+        return;
+      }
       log("subtitle", text);
       const requestId = ++state.activeRequestId;
       show("…");
@@ -741,6 +782,12 @@
     applySubtitleSize(state.subtitleSize);
     refresh();
   });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      state.lastText = "";
+      scheduleRead();
+    }
+  });
   statusBadge.addEventListener("click", (event) => {
     event.stopPropagation();
     toggleSettings();
@@ -779,7 +826,9 @@
 
   refresh();
   pingTranslator();
-  setInterval(pingTranslator, 5000);
+  setInterval(() => {
+    if (!document.hidden) pingTranslator();
+  }, 5000);
   function watchVideoSeeks() {
     const video = document.querySelector("video");
     if (!video || video === state.video) return;
