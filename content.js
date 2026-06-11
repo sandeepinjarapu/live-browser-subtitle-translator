@@ -23,6 +23,8 @@
     rollingLines: [],
     rollingPending: "",
     recentCommitted: [],
+    provisionalSrc: "",
+    provisionalOut: "",
     subtitleSize: Number(localStorage.getItem("prime-subtitle-size")) || 36,
     translatorBackend: localStorage.getItem("prime-subtitle-backend") || "libre",
     gemmaModel: localStorage.getItem("prime-subtitle-gemma-model") || "gemma4:e2b-it-qat",
@@ -793,6 +795,8 @@
     if (!text) {
       if (state.rollingPending || state.rollingLines.length) {
         state.rollingPending = "";
+        state.provisionalSrc = "";
+        state.provisionalOut = "";
         clearTimeout(state.stabilizeTimer);
         const lingerMs = Math.min(5000, Math.max(2000, (box.textContent || "").length * 90));
         clearTimeout(state.clearTimer);
@@ -823,7 +827,44 @@
       state.rollingPending = last;
       clearTimeout(state.stabilizeTimer);
       state.stabilizeTimer = setTimeout(() => commitLine(last), ROLLING_HOLD_MS);
+      updateProvisional(last);
     }
+  }
+
+  // Live provisional zone: the still-growing line, translated by Libre on
+  // every change (~50ms, fast enough to keep word pace; Gemma is not).
+  // Continuity over fidelity — the committed line above is the clean record.
+  function updateProvisional(rawLast) {
+    const src = (rawLast || "").replace(/^>{2,}\s*/, "").trim();
+    if (!src || isNoise(src) || src === state.provisionalSrc) return;
+    state.provisionalSrc = src;
+    translateWithLibre(src)
+      .then((out) => {
+        if (state.provisionalSrc !== src || !out) return; // superseded
+        state.provisionalOut = out;
+        positionOverlay();
+        box.style.display = "block";
+        ensureProvisionalEl().textContent = out;
+      })
+      .catch(() => {});
+  }
+
+  function ensureProvisionalEl() {
+    let el = box.querySelector("#prime-subtitle-provisional");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "prime-subtitle-provisional";
+      el.style.cssText = "font-style: italic; opacity: 0.65";
+      box.appendChild(el); // always the bottom row; committed lines insert above
+    }
+    return el;
+  }
+
+  function clearProvisional() {
+    state.provisionalSrc = "";
+    state.provisionalOut = "";
+    const el = box.querySelector("#prime-subtitle-provisional");
+    if (el) el.textContent = "";
   }
 
   function commitLine(rawSrc) {
@@ -842,8 +883,15 @@
     state.rollingLines.push(entry);
     if (state.rollingLines.length > 3) state.rollingLines.shift();
     log("commit", src);
+    // Promote the provisional Libre text into the stack right away; the
+    // backend's final translation replaces it in place when it lands.
+    if (state.provisionalSrc === src && state.provisionalOut) {
+      entry.out = state.provisionalOut;
+    }
+    if (state.provisionalSrc === src) clearProvisional();
+    if (entry.out) renderRolling();
     translateLine(src, (translated) => {
-      entry.out = translated || src;
+      entry.out = translated || entry.out || src;
       renderRolling();
     });
   }
@@ -876,15 +924,18 @@
         `transition: max-height ${ROLL_MS}ms ease, opacity ${ROLL_MS}ms ease`,
       ].join(";");
       // Translations can resolve out of order; keep the spoken order.
+      // The provisional row always stays at the bottom.
       const next = entries.slice(i + 1).find((e) => e.el);
-      box.insertBefore(el, next ? next.el : null);
+      box.insertBefore(el, next ? next.el : box.querySelector("#prime-subtitle-provisional"));
       requestAnimationFrame(() => {
         el.style.maxHeight = `${el.scrollHeight}px`;
         el.style.opacity = "1";
       });
     });
     // Roll the oldest line out once more than two are showing.
-    const active = [...box.children].filter((el) => !el.dataset.rollingOut);
+    const active = [...box.children].filter(
+      (el) => !el.dataset.rollingOut && el.id !== "prime-subtitle-provisional"
+    );
     active.slice(0, -2).forEach((el) => {
       el.dataset.rollingOut = "1";
       el.style.maxHeight = "0px";
@@ -1152,6 +1203,7 @@
       if (siteAdapter && siteAdapter.rolling) {
         state.rollingLines = [];
         state.rollingPending = "";
+        clearProvisional();
         show("");
         return;
       }
