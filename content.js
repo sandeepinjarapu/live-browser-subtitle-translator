@@ -408,7 +408,40 @@
     }
   }
 
+  // Known sites get pinned selectors (zero blast radius between sites);
+  // unknown sites — or known sites after a redesign breaks the pins — fall
+  // back to the generic heuristics below.
+  const SITE_ADAPTERS = [
+    {
+      hosts: ["hotstar.com"],
+      roots: [".shaka-text-container"],
+    },
+    {
+      hosts: ["primevideo.com", "amazon.com", "amazon.in"],
+      roots: [
+        ".atvwebplayersdk-captions-text",
+        ".atvwebplayersdk-caption",
+        ".atvwebplayersdk-captions-container",
+      ],
+    },
+  ];
+  const siteAdapter =
+    SITE_ADAPTERS.find((a) =>
+      a.hosts.some((h) => location.hostname === h || location.hostname.endsWith(`.${h}`))
+    ) || null;
+  let adapterMissLogged = false;
+
   function candidateRoots() {
+    if (siteAdapter) {
+      const pinned = siteAdapter.roots
+        .map((selector) => document.querySelector(selector))
+        .filter(Boolean);
+      if (pinned.length) return pinned;
+      if (!adapterMissLogged) {
+        adapterMissLogged = true;
+        log("site adapter selectors found nothing — falling back to generic heuristics (site redesign?)");
+      }
+    }
     return [
       // Shaka Player (Hotstar and others) — found via probe.js
       document.querySelector(".shaka-text-container"),
