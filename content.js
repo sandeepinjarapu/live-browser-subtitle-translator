@@ -295,14 +295,15 @@
         think: false,
         prompt: [
           `Translate the following English subtitle into natural ${state.targetLanguage}.`,
-          `Return only the ${state.targetLanguage} translation.`,
+          `Respond in ${state.targetLanguage} only, even if the line is short or ambiguous.`,
+          `Return only the ${state.targetLanguage} translation, nothing else.`,
           "",
           normalized,
         ].join("\n"),
         stream: true,
         keep_alive: "30m",
         options: {
-          temperature: 0.2,
+          temperature: 0,
           num_predict: 128,
         },
       }),
@@ -395,6 +396,7 @@
     for (const el of roots) {
       const text = (el.innerText || "").trim();
       const score =
+        (/caption/i.test(el.className || "") ? 10 : 0) +
         (text.length > 0 ? 5 : 0) +
         (el.querySelectorAll("*").length > 0 ? 2 : 0) +
         (el.getBoundingClientRect().top > window.innerHeight * 0.4 ? 2 : 0);
@@ -402,6 +404,16 @@
         bestScore = score;
         best = el;
       }
+    }
+    // Stick with the current root unless the new pick is a caption element;
+    // generic containers flapping in and out re-trigger observers and drop lines.
+    if (
+      state.subtitleRoot &&
+      document.contains(state.subtitleRoot) &&
+      best !== state.subtitleRoot &&
+      !/caption/i.test(best && best.className || "")
+    ) {
+      return state.subtitleRoot;
     }
     return best;
   }
