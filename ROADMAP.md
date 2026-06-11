@@ -46,7 +46,8 @@ Each service needs three things audited: (a) can we *find* the subtitle text (DO
 |---|---|---|
 | Prime Video | Partial (DOM) | Works for MX-Player-sourced shows; other titles render subtitles without readable DOM text (image/canvas suspected) — prefetch prototype target |
 | Netflix | Medium | Subtitles render to a known DOM container; track files (TTML) fetched per language — good prefetch candidate |
-| JioHotstar, Zee5, SonyLIV, MX Player | Unknown, likely medium | Indian OTTs vary; several use standard HLS/DASH with WebVTT |
+| JioHotstar | **Supported** (probe-verified 2026-06) | Shaka Player; subtitles in `.shaka-text-container` — selector added to the extension |
+| Zee5, SonyLIV, MX Player | Unknown, likely medium | Indian OTTs vary; several use standard HLS/DASH with WebVTT; any Shaka-based player is now covered |
 | Apple TV+ (web) | Hard | Heavy canvas/custom rendering in places; Safari-first audience |
 | aha, SUNNXT, Eros Now, Lionsgate Play | Unknown | Audit pass needed |
 

@@ -374,6 +374,8 @@
 
   function candidateRoots() {
     return [
+      // Shaka Player (Hotstar and others) — found via probe.js
+      document.querySelector(".shaka-text-container"),
       document.querySelector(".atvwebplayersdk-caption"),
       document.querySelector(".atvwebplayersdk-captions-container"),
       document.querySelector(".atvwebplayersdk-captions-text"),
@@ -639,7 +641,10 @@
           log("node", signature);
           log("nodeText", (subtitleNode.innerText || "").trim());
         }
-        if (subtitleNode.tagName === "SPAN" && /caption/i.test(subtitleNode.className || "")) {
+        if (
+          (subtitleNode.tagName === "SPAN" && /caption/i.test(subtitleNode.className || "")) ||
+          subtitleNode.closest(".shaka-text-container")
+        ) {
           hideNode(subtitleNode);
         }
       }

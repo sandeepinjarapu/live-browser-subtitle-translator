@@ -9,7 +9,8 @@
       "matches": [
         "*://*.primevideo.com/*",
         "*://*.amazon.com/*",
-        "*://*.amazon.in/*"
+        "*://*.amazon.in/*",
+        "*://*.hotstar.com/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"
