@@ -79,10 +79,19 @@
   // --- watch phase: sample real subtitle text for WATCH_MS -----------------
   console.log(TAG, `watching for ${WATCH_MS / 1000}s — keep the video playing...`);
 
+  // Dialogue changes during playback and sits low on screen; static page
+  // metadata (titles, genres, ratings) matching the selectors does neither.
+  const prevText = new Map();
+  for (const c of seen) prevText.set(c, (c.innerText || "").trim());
   const observer = new MutationObserver(() => {
     for (const c of seen) {
       const text = (c.innerText || "").trim();
-      if (text && text.length > 1 && !report.domTextSamples.includes(text)) {
+      if (text === prevText.get(c)) continue;
+      prevText.set(c, text);
+      const rect = c.getBoundingClientRect();
+      const visible = rect.width > 0 && rect.height > 0;
+      const lowOnScreen = rect.top > window.innerHeight * 0.4;
+      if (text && text.length > 1 && visible && lowOnScreen && !report.domTextSamples.includes(text)) {
         report.domTextSamples.push(text.slice(0, 120));
       }
     }
@@ -115,13 +124,16 @@
         ? "n/a (cues come from track API; rendering is player-side)"
         : "nothing to hide — no text found";
 
-    const verdict = report.domTextSamples.length
+    // Require at least 2 distinct changing lines; one change could be noise.
+    const verdict = report.domTextSamples.length >= 2
       ? "SUPPORTED via DOM scraping (current pipeline)"
       : report.trackCueSamples.length
         ? "SUPPORTED via textTrack cues (better than scraping — new reader needed)"
-        : report.videos
-          ? "NOT READABLE — likely image/canvas subtitles; needs v2 prefetch route"
-          : "NOT READABLE — no <video>; custom player, needs investigation";
+        : report.domCandidates.length && !report.domTextSamples.length
+          ? "INCONCLUSIVE — subtitle-like elements exist but none changed during playback (metadata match? subtitles off? video paused?)"
+          : report.videos
+            ? "NOT READABLE — likely image/canvas subtitles; needs v2 prefetch route"
+            : "NOT READABLE — no <video>; custom player, needs investigation";
 
     console.log(TAG, "================ PROBE VERDICT ================");
     console.log(TAG, "site:", report.site);
