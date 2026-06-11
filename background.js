@@ -2,6 +2,35 @@
 // under the page's CSP (Hotstar blocks localhost); the service worker uses
 // the extension's own host_permissions instead.
 
+// Granted origins persist, but dynamic content-script registrations are
+// wiped on extension reload/update — rebuild them from permissions.
+async function syncRegisteredSites() {
+  const { origins = [] } = await chrome.permissions.getAll();
+  const sitePatterns = origins.filter(
+    (o) => /^https?:\/\//.test(o) && !/127\.0\.0\.1|localhost/.test(o)
+  );
+  const existing = await chrome.scripting.getRegisteredContentScripts();
+  const registered = new Set(existing.map((s) => s.id));
+  for (const pattern of sitePatterns) {
+    if (registered.has(pattern)) continue;
+    try {
+      await chrome.scripting.registerContentScripts([
+        {
+          id: pattern,
+          matches: [pattern],
+          js: ["content.js"],
+          runAt: "document_idle",
+          persistAcrossSessions: true,
+        },
+      ]);
+    } catch {
+      // invalid/duplicate pattern — skip
+    }
+  }
+}
+chrome.runtime.onInstalled.addListener(syncRegisteredSites);
+chrome.runtime.onStartup.addListener(syncRegisteredSites);
+
 // "Try on this site": toolbar click on any OTT requests permission for that
 // origin, injects the pipeline now, and registers it for future visits.
 chrome.action.onClicked.addListener(async (tab) => {
