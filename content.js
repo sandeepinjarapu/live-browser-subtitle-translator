@@ -859,9 +859,16 @@
   function fireWarm() {
     state.warmTimer = null;
     const src = state.warmNextSrc;
-    if (!src || state.warm.has(src)) return;
+    // One speculative request at a time: a slow model (e4b ~3-4s/line) must
+    // not stack a queue of stale speculations ahead of real commits.
+    if (!src || state.warm.has(src) || state.warmInFlight) return;
+    state.warmInFlight = true;
     const backend = state.translatorBackend === "libre" ? translateWithLibre : translateWithGemma;
-    state.warm.set(src, backend(src).catch(() => ""));
+    const job = backend(src).catch(() => "");
+    job.then(() => {
+      state.warmInFlight = false;
+    });
+    state.warm.set(src, job);
     if (state.warm.size > 6) state.warm.delete(state.warm.keys().next().value);
   }
 
@@ -875,6 +882,7 @@
     state.warmNextSrc = "";
     clearTimeout(state.warmTimer);
     state.warmTimer = null;
+    state.warmInFlight = false;
   }
 
   function commitLine(rawSrc) {
