@@ -161,12 +161,27 @@
     console.log("[Prime Subtitle Light]", ...args);
   }
 
+  // Anchor the overlay to the video's rectangle, not the viewport: in
+  // windowed layouts a viewport-bottom overlay sits on the player controls.
+  function positionOverlay() {
+    const video = state.video || document.querySelector("video");
+    const rect = video ? video.getBoundingClientRect() : null;
+    if (!rect || !rect.height) {
+      box.style.left = "50%";
+      box.style.bottom = "7%";
+      return;
+    }
+    box.style.left = `${rect.left + rect.width / 2}px`;
+    box.style.bottom = `${Math.max(0, window.innerHeight - rect.bottom) + rect.height * 0.14}px`;
+  }
+
   function show(text) {
     if (!text) {
       box.style.display = "none";
       box.textContent = "";
       return;
     }
+    positionOverlay();
     box.textContent = text;
     box.style.display = "block";
   }
@@ -926,6 +941,7 @@
   watchVideoSeeks();
   setInterval(() => {
     watchVideoSeeks();
+    positionOverlay();
     // Always re-evaluate the root, not just when it left the DOM: the initial
     // pick can land on a lookalike (e.g. Hotstar's subtitle button icon) that
     // never gets removed, and the real caption container appears later.
