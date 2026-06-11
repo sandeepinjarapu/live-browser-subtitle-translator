@@ -658,6 +658,16 @@
     return !text || text.length < 2 || noisePatterns().some((re) => re.test(text));
   }
 
+  // Guard against non-English input (e.g. the user left YouTube's own
+  // auto-translate on): en->Telugu models turn it into gibberish. A real
+  // English line is overwhelmingly Latin letters.
+  function isTranslatableEnglish(text) {
+    const letters = (text.match(/[\p{L}]/gu) || []).length;
+    if (!letters) return false;
+    const latin = (text.match(/[A-Za-z]/g) || []).length;
+    return latin / letters > 0.5;
+  }
+
   function narrowText(text) {
     const patterns = noisePatterns();
     const lines = text
@@ -836,7 +846,7 @@
   // Continuity over fidelity — the committed line above is the clean record.
   function updateProvisional(rawLast) {
     const src = (rawLast || "").replace(/^>{2,}\s*/, "").trim();
-    if (!src || isNoise(src) || src === state.provisionalSrc) return;
+    if (!src || isNoise(src) || !isTranslatableEnglish(src) || src === state.provisionalSrc) return;
     state.provisionalSrc = src;
     translateWithLibre(src)
       .then((out) => {
@@ -871,7 +881,7 @@
     // Strip broadcast-style speaker markers (">>", ">>>"); they confuse the
     // translation models and carry no meaning for the viewer.
     const src = (rawSrc || "").replace(/^>{2,}\s*/, "").trim();
-    if (!src || isNoise(src)) return;
+    if (!src || isNoise(src) || !isTranslatableEnglish(src)) return;
     if (state.recentCommitted.includes(src)) return;
     state.recentCommitted.push(src);
     if (state.recentCommitted.length > 8) state.recentCommitted.shift();
