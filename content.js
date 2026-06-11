@@ -13,6 +13,9 @@
     rootObserver: null,
     retryTimer: null,
     clearTimer: null,
+    minDisplayTimer: null,
+    lastPaintAt: 0,
+    paintedRequestId: 0,
     overlayHost: null,
     translationCache: new Map(),
     activeRequestId: 0,
@@ -175,6 +178,24 @@
     // 7% of video height matches the original fullscreen position; the 64px
     // floor keeps the overlay above player controls in small windowed layouts.
     box.style.bottom = `${Math.max(0, window.innerHeight - rect.bottom) + Math.max(rect.height * 0.07, 64)}px`;
+  }
+
+  // A shown translation stays up at least this long before a NEW line may
+  // replace it; re-paints of the same line (streaming, hybrid swap) pass.
+  const MIN_DISPLAY_MS = 500;
+  function schedulePaint(requestId, render) {
+    if (requestId !== state.activeRequestId) return;
+    const elapsed = Date.now() - state.lastPaintAt;
+    if (state.paintedRequestId !== requestId && elapsed < MIN_DISPLAY_MS) {
+      clearTimeout(state.minDisplayTimer);
+      state.minDisplayTimer = setTimeout(() => schedulePaint(requestId, render), MIN_DISPLAY_MS - elapsed);
+      return;
+    }
+    if (state.paintedRequestId !== requestId) {
+      state.paintedRequestId = requestId;
+      state.lastPaintAt = Date.now();
+    }
+    render();
   }
 
   function show(text) {
@@ -509,7 +530,7 @@
       roots: [".ytp-caption-window-container"],
       // Auto-captions roll word-by-word; translate only once a line has
       // stopped changing for this long, or every word restarts the request.
-      stabilizeMs: 450,
+      stabilizeMs: 250,
     },
     {
       hosts: ["primevideo.com", "amazon.com", "amazon.in"],
@@ -794,11 +815,12 @@
       // on rolling-caption sites; only show the pending marker from cold.
       if (!state.lastTranslatedText) show("…");
       const applyTranslation = (translated) => {
-        if (requestId !== state.activeRequestId) return;
-        const output = translated || text;
-        state.lastTranslatedText = output;
-        show(output);
-        log("translation", output);
+        schedulePaint(requestId, () => {
+          const output = translated || text;
+          state.lastTranslatedText = output;
+          show(output);
+          log("translation", output);
+        });
       };
       if (state.translatorBackend === "hybrid") {
         let gemmaDone = false;
@@ -826,7 +848,7 @@
           const now = Date.now();
           if (now - lastPartialAt < 200) return;
           lastPartialAt = now;
-          show(partial);
+          schedulePaint(requestId, () => show(partial));
         };
         translateWithGemma(text, onPartial)
           .then(applyTranslation)
