@@ -763,8 +763,10 @@
   watchVideoSeeks();
   setInterval(() => {
     watchVideoSeeks();
-    if (!state.subtitleRoot || !document.contains(state.subtitleRoot)) {
-      refresh();
-    }
+    // Always re-evaluate the root, not just when it left the DOM: the initial
+    // pick can land on a lookalike (e.g. Hotstar's subtitle button icon) that
+    // never gets removed, and the real caption container appears later.
+    // pickRoot's stickiness prevents flapping between equivalent roots.
+    refresh();
   }, 1500);
 })();
