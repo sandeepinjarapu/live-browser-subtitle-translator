@@ -157,22 +157,38 @@
   const pointTimer = setInterval(() => {
     const vr = mainVideo ? mainVideo.getBoundingClientRect() : { left: 0, right: window.innerWidth, top: 0, bottom: window.innerHeight };
     const x = (vr.left + vr.right) / 2;
+    const videoArea = Math.max(1, (vr.right - vr.left) * (vr.bottom - vr.top));
     for (const frac of [0.75, 0.85, 0.93]) {
       const y = vr.top + (vr.bottom - vr.top) * frac;
-      // composedPath through shadow DOM: elementsFromPoint pierces open shadow roots
+      // Walk the whole stack: full-video control overlays sit on top of the
+      // subtitle element and would mask it if we stopped at the first hit.
+      // A subtitle box is small with short, few-line text — pick the
+      // smallest element that fits that shape.
+      let best = null;
+      let bestArea = Infinity;
       for (const el of document.elementsFromPoint(x, y)) {
         if (el.tagName === "CANVAS") report.canvasOverVideo = true;
         if (el.tagName === "VIDEO" || el.tagName === "CANVAS" || el.tagName === "IFRAME") continue;
         const text = (el.innerText || el.textContent || "").trim();
-        if (!text || text.length < 2 || text.length > 200 || isClockLike(text)) continue;
+        if (!text || text.length < 2 || text.length > 150 || isClockLike(text)) continue;
+        if ((text.match(/\n/g) || []).length > 2) continue;
+        const rect = el.getBoundingClientRect();
+        const area = rect.width * rect.height;
+        if (area > videoArea * 0.35 || rect.height > (vr.bottom - vr.top) * 0.3) continue;
+        if (area < bestArea) {
+          bestArea = area;
+          best = el;
+        }
+      }
+      if (best) {
+        const text = (best.innerText || best.textContent || "").trim();
         if (!report.pointSamples.includes(text)) {
           report.pointSamples.push(text.slice(0, 120));
-          const root = el.getRootNode();
+          const root = best.getRootNode();
           const shadowNote = root instanceof ShadowRoot ? ` [in shadow root of ${nodePath(root.host)}]` : "";
-          const path = nodePath(el) + shadowNote;
+          const path = nodePath(best) + shadowNote;
           if (!report.pointContainers.includes(path)) report.pointContainers.push(path);
         }
-        break; // innermost text element at this point is enough
       }
     }
   }, 500);
