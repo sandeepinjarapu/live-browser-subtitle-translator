@@ -576,10 +576,18 @@
   // Advisory only — never gates settings. The adapter signal (CC button
   // state) is exact; the generic fallback is patient (20s of playback with
   // no caption text) because silent stretches are normal.
+  // OTT pages keep several <video> elements around (previews, idle players);
+  // querySelector("video") can land on a paused dummy. Prefer the one playing.
+  function activeVideo() {
+    const vids = [...document.querySelectorAll("video")];
+    return vids.find((v) => !v.paused && !v.ended && v.currentTime > 0) || vids[0] || null;
+  }
+
   function updateCaptionHint() {
+    const prevHint = state.captionHint;
     state.captionHint = "";
     if (!state.enabled) return;
-    const video = state.video || document.querySelector("video");
+    const video = activeVideo();
     const playing = video && !video.paused && !video.ended && video.currentTime > 0;
     if (!playing) {
       state.lastCaptionTextAt = Date.now();
@@ -602,6 +610,7 @@
       statusBadge.textContent = `Translator: ${state.captionHint}`;
       statusBadge.style.background = "rgba(140, 100, 20, 0.85)";
     }
+    if (state.captionHint !== prevHint) log("captionHint", state.captionHint || "(cleared)");
   }
 
   async function pingTranslator() {
