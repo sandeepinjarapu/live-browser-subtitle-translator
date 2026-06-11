@@ -490,6 +490,9 @@
     {
       hosts: ["youtube.com"],
       roots: [".ytp-caption-window-container"],
+      // Auto-captions roll word-by-word; translate only once a line has
+      // stopped changing for this long, or every word restarts the request.
+      stabilizeMs: 600,
     },
     {
       hosts: ["primevideo.com", "amazon.com", "amazon.in"],
@@ -756,9 +759,23 @@
         show("");
         return;
       }
+      const stabilizeMs = siteAdapter && siteAdapter.stabilizeMs;
+      if (stabilizeMs) {
+        clearTimeout(state.stabilizeTimer);
+        state.stabilizeTimer = setTimeout(() => startTranslation(text), stabilizeMs);
+        return;
+      }
+      startTranslation(text);
+    }
+  }
+
+  function startTranslation(text) {
+    {
       log("subtitle", text);
       const requestId = ++state.activeRequestId;
-      show("…");
+      // Keep the previous translation visible while the next one is pending
+      // on rolling-caption sites; only show the pending marker from cold.
+      if (!state.lastTranslatedText) show("…");
       const applyTranslation = (translated) => {
         if (requestId !== state.activeRequestId) return;
         const output = translated || text;
