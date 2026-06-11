@@ -150,6 +150,7 @@
   hideCss.textContent = [
     ".shaka-text-container,",
     ".atvwebplayersdk-captions-text,",
+    ".ytp-caption-window-container,",
     ".atvwebplayersdk-caption {",
     "  opacity: 0 !important;",
     "}",
@@ -487,6 +488,10 @@
       roots: [".shaka-text-container"],
     },
     {
+      hosts: ["youtube.com"],
+      roots: [".ytp-caption-window-container"],
+    },
+    {
       hosts: ["primevideo.com", "amazon.com", "amazon.in"],
       roots: [
         ".atvwebplayersdk-captions-text",
@@ -522,20 +527,34 @@
         log("site adapter selectors found nothing — falling back to generic heuristics (site redesign?)");
       }
     }
-    return [
-      // Shaka Player (Hotstar and others) — found via probe.js
-      document.querySelector(".shaka-text-container"),
-      document.querySelector(".atvwebplayersdk-caption"),
-      document.querySelector(".atvwebplayersdk-captions-container"),
-      document.querySelector(".atvwebplayersdk-captions-text"),
-      document.querySelector(".atvwebplayersdk-player-container"),
-      document.querySelector('[aria-label="Web Player"]'),
-      document.querySelector(".dv-player-fullscreen"),
-      document.querySelector('[data-testid*="caption"]'),
-      document.querySelector('[class*="caption"]'),
-      document.querySelector('[class*="subtitle"]'),
-      document.querySelector('[class*="subtitles"]'),
-    ].filter(Boolean);
+    // All matches per selector, not just the first: querySelector's first
+    // document-order hit can be a <script> in <head> whose class mentions
+    // captions (YouTube). Scoring in pickRoot chooses among candidates.
+    const selectors = [
+      ".shaka-text-container",
+      ".ytp-caption-window-container",
+      ".atvwebplayersdk-caption",
+      ".atvwebplayersdk-captions-container",
+      ".atvwebplayersdk-captions-text",
+      ".atvwebplayersdk-player-container",
+      '[aria-label="Web Player"]',
+      ".dv-player-fullscreen",
+      '[data-testid*="caption"]',
+      '[class*="caption"]',
+      '[class*="subtitle"]',
+    ];
+    const seenEls = new Set();
+    const out = [];
+    for (const selector of selectors) {
+      for (const el of document.querySelectorAll(selector)) {
+        if (seenEls.has(el)) continue;
+        seenEls.add(el);
+        if (/^(SCRIPT|STYLE|LINK|META|NOSCRIPT)$/.test(el.tagName)) continue;
+        out.push(el);
+        if (out.length >= 40) return out;
+      }
+    }
+    return out;
   }
 
   function pickRoot() {
