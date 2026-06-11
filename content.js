@@ -26,7 +26,7 @@
     lastCaptionTextAt: Date.now(),
     captionHint: "",
     rollingEmptySince: 0,
-    prevSrc: "",
+    prevLines: [], // last 2 source lines, newest last
     nameCounts: new Map(),
     glossaryNames: [],
     warm: new Map(),
@@ -484,7 +484,7 @@
     const lang = state.translatorBackend === "hybrid" ? "Telugu" : state.targetLanguage;
     // Same line under different preceding context can translate differently
     // (pronouns, tense), so the context participates in the key.
-    const context = state.prevSrc && state.prevSrc !== normalized ? state.prevSrc : "";
+    const context = state.prevLines.filter((l) => l !== normalized).join("\n");
     const cacheKey = `gemma:${state.gemmaModel}:${lang}:${context.slice(-48)}:${normalized}`;
     if (state.translationCache.has(cacheKey)) {
       return state.translationCache.get(cacheKey);
@@ -505,7 +505,7 @@
           ...(state.glossaryNames.length
             ? [`Transliterate these names consistently: ${state.glossaryNames.join(", ")}.`]
             : []),
-          ...(context ? [`Previous line (context only, do not translate): ${context}`] : []),
+          ...(context ? [`Previous lines (context only, do not translate):\n${context}`] : []),
           "",
           `Subtitle: ${normalized}`,
         ].join("\n"),
@@ -815,6 +815,11 @@
     "His", "Her", "She", "Him", "For", "With", "From", "Just", "Like", "Right",
   ]);
 
+  function notePrev(src) {
+    state.prevLines.push(src);
+    if (state.prevLines.length > 2) state.prevLines.shift();
+  }
+
   function noteNames(text) {
     const words = text.match(/\b[A-Z][a-z]{2,}\b/g) || [];
     for (const word of words) {
@@ -985,7 +990,7 @@
         clearTimeout(state.clearTimer);
         state.clearTimer = setTimeout(() => {
           state.rollingLines = [];
-          state.prevSrc = ""; // scene break — stale context misleads more than it helps
+          state.prevLines = []; // scene break — stale context misleads more than it helps
           show("");
         }, lingerMs);
       }
@@ -1082,7 +1087,7 @@
       entry.out = translated || entry.out || src;
       renderRolling();
     });
-    state.prevSrc = src; // after dispatch: the request reads the line before this one
+    notePrev(src); // after dispatch: the request reads the lines before this one
   }
 
   // The box is bottom-anchored, so a new line growing in at the bottom
@@ -1293,7 +1298,7 @@
             log("translationError", String(error));
           });
       }
-      state.prevSrc = text; // after dispatch: the request reads the line before this one
+      notePrev(text); // after dispatch: the request reads the lines before this one
       const subtitleNode = findSmallestMatchingDescendant(state.subtitleRoot, text) || findSubtitleNode(state.subtitleRoot, text);
       if (subtitleNode) {
         const signature = nodePath(subtitleNode);
@@ -1392,7 +1397,7 @@
     // On seeks/skips the lingering subtitle no longer matches the scene.
     video.addEventListener("seeked", () => {
       clearTimeout(state.clearTimer);
-      state.prevSrc = ""; // a seek breaks dialogue continuity
+      state.prevLines = []; // a seek breaks dialogue continuity
       if (siteAdapter && siteAdapter.rolling) {
         state.rollingLines = [];
         state.rollingPending = "";
