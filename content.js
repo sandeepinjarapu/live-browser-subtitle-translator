@@ -1078,16 +1078,33 @@
       state.rollingPending = "";
       clearTimeout(state.stabilizeTimer);
     }
-    const entry = { src, out: null };
-    state.rollingLines.push(entry);
-    if (state.rollingLines.length > 3) state.rollingLines.shift();
+    // A pause mid-sentence commits a prefix; when the completed line arrives
+    // (via scroll), extend that entry in place — never show fragment + full
+    // line as two near-identical neighbors.
+    const prior = state.rollingLines[state.rollingLines.length - 1];
+    const extending = prior && src.startsWith(prior.src) && src !== prior.src;
+    const entry = extending ? prior : { src, out: null };
+    const priorSrc = extending ? prior.src : "";
+    if (extending) {
+      entry.src = src;
+    } else {
+      state.rollingLines.push(entry);
+      if (state.rollingLines.length > 3) state.rollingLines.shift();
+    }
     log("commit", src);
     noteNames(src);
     translateLine(src, (translated) => {
       entry.out = translated || entry.out || src;
       renderRolling();
     });
-    notePrev(src); // after dispatch: the request reads the lines before this one
+    // After dispatch, so the request's context holds the lines before this one.
+    if (extending) {
+      if (state.prevLines[state.prevLines.length - 1] === priorSrc) {
+        state.prevLines[state.prevLines.length - 1] = src;
+      }
+    } else {
+      notePrev(src);
+    }
   }
 
   // The box is bottom-anchored, so a new line growing in at the bottom
