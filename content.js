@@ -23,8 +23,9 @@
     rollingLines: [],
     rollingPending: "",
     recentCommitted: [],
-    provisionalSrc: "",
-    provisionalOut: "",
+    warm: new Map(),
+    warmNextSrc: "",
+    warmTimer: null,
     subtitleSize: Number(localStorage.getItem("prime-subtitle-size")) || 36,
     translatorBackend: localStorage.getItem("prime-subtitle-backend") || "libre",
     gemmaModel: localStorage.getItem("prime-subtitle-gemma-model") || "gemma4:e2b-it-qat",
@@ -799,13 +800,13 @@
   // final ("committed") — translate exactly those, never half-built lines.
   // The overlay mirrors the model: last two translated lines stacked, so the
   // previous line lingers for readability while the next is being translated.
-  const ROLLING_HOLD_MS = 700; // commit the last line after this pause
+  const ROLLING_HOLD_MS = 450; // commit the last line after this pause
 
   function readRolling(text) {
     if (!text) {
       if (state.rollingPending || state.rollingLines.length) {
         state.rollingPending = "";
-        clearProvisional();
+        clearWarm();
         clearTimeout(state.stabilizeTimer);
         const lingerMs = Math.min(5000, Math.max(2000, (box.textContent || "").length * 90));
         clearTimeout(state.clearTimer);
@@ -836,61 +837,44 @@
       state.rollingPending = last;
       clearTimeout(state.stabilizeTimer);
       state.stabilizeTimer = setTimeout(() => commitLine(last), ROLLING_HOLD_MS);
-      updateProvisional(last);
+      scheduleWarm(last);
     }
   }
 
-  // Live provisional zone: the still-growing line, translated by Libre on
-  // every change (~50ms, fast enough to keep word pace; Gemma is not).
-  // Continuity over fidelity — the committed line above is the clean record.
-  // Repaint the provisional row at a calm cadence, not per word: collect the
-  // latest text and translate it on a fixed beat.
-  const PROVISIONAL_EVERY_MS = 700;
+  // Warm-ahead: on a fixed beat, speculatively translate the still-growing
+  // line with the selected backend, keyed by exact text. A pause-commit's
+  // text is by definition unchanged for ROLLING_HOLD_MS, so its warm request
+  // is already in flight (or done) when the commit lands — the inference
+  // time overlaps the wait instead of following it.
+  const WARM_EVERY_MS = 600;
 
-  function updateProvisional(rawLast) {
+  function scheduleWarm(rawLast) {
     const src = (rawLast || "").replace(/^>{2,}\s*/, "").trim();
     if (!src || isNoise(src) || !isTranslatableEnglish(src)) return;
-    state.provisionalNextSrc = src;
-    if (state.provisionalTimer) return;
-    state.provisionalTimer = setTimeout(fireProvisional, PROVISIONAL_EVERY_MS);
+    state.warmNextSrc = src;
+    if (state.warmTimer) return;
+    state.warmTimer = setTimeout(fireWarm, WARM_EVERY_MS);
   }
 
-  function fireProvisional() {
-    state.provisionalTimer = null;
-    const src = state.provisionalNextSrc;
-    if (!src || src === state.provisionalSrc) return;
-    state.provisionalSrc = src;
-    translateWithLibre(src)
-      .then((out) => {
-        if (state.provisionalSrc !== src || !out) return; // superseded
-        state.provisionalOut = out;
-        positionOverlay();
-        box.style.display = "block";
-        ensureProvisionalEl().textContent = out;
-      })
-      .catch(() => {});
+  function fireWarm() {
+    state.warmTimer = null;
+    const src = state.warmNextSrc;
+    if (!src || state.warm.has(src)) return;
+    const backend = state.translatorBackend === "libre" ? translateWithLibre : translateWithGemma;
+    state.warm.set(src, backend(src).catch(() => ""));
+    if (state.warm.size > 6) state.warm.delete(state.warm.keys().next().value);
   }
 
-  function ensureProvisionalEl() {
-    let el = box.querySelector("#prime-subtitle-provisional");
-    if (!el) {
-      el = document.createElement("div");
-      el.id = "prime-subtitle-provisional";
-      el.style.cssText =
-        "font-style: italic; opacity: 0.4; font-size: 0.72em; font-weight: 400; text-align: left";
-      box.appendChild(el); // always the bottom row; committed lines insert above
-    }
-    return el;
+  function pickWarm(src) {
+    const p = state.warm.get(src);
+    if (p) state.warm.delete(src);
+    return p || null;
   }
 
-  function clearProvisional() {
-    state.provisionalSrc = "";
-    state.provisionalOut = "";
-    state.provisionalNextSrc = "";
-    clearTimeout(state.provisionalTimer);
-    state.provisionalTimer = null;
-    const el = box.querySelector("#prime-subtitle-provisional");
-    if (el) el.textContent = "";
+  function clearWarm() {
+    state.warmNextSrc = "";
+    clearTimeout(state.warmTimer);
+    state.warmTimer = null;
   }
 
   function commitLine(rawSrc) {
@@ -909,13 +893,6 @@
     state.rollingLines.push(entry);
     if (state.rollingLines.length > 3) state.rollingLines.shift();
     log("commit", src);
-    // Promote the provisional Libre text into the stack right away; the
-    // backend's final translation replaces it in place when it lands.
-    if (state.provisionalSrc === src && state.provisionalOut) {
-      entry.out = state.provisionalOut;
-    }
-    if (state.provisionalSrc === src) clearProvisional();
-    if (entry.out) renderRolling();
     translateLine(src, (translated) => {
       entry.out = translated || entry.out || src;
       renderRolling();
@@ -950,32 +927,27 @@
         `transition: max-height ${ROLL_MS}ms ease, opacity ${ROLL_MS}ms ease`,
       ].join(";");
       // Translations can resolve out of order; keep the spoken order.
-      // The provisional row always stays at the bottom.
       const next = entries.slice(i + 1).find((e) => e.el);
-      box.insertBefore(el, next ? next.el : box.querySelector("#prime-subtitle-provisional"));
+      box.insertBefore(el, next ? next.el : null);
       requestAnimationFrame(() => {
         el.style.maxHeight = `${el.scrollHeight}px`;
         el.style.opacity = "1";
       });
     });
     // Roll the oldest line out once more than two are showing.
-    const active = [...box.children].filter(
-      (el) => !el.dataset.rollingOut && el.id !== "prime-subtitle-provisional"
-    );
+    const active = [...box.children].filter((el) => !el.dataset.rollingOut);
     active.slice(0, -2).forEach((el) => {
       el.dataset.rollingOut = "1";
-      // Hold the outgoing line briefly so the eye can finish it before it rolls.
-      setTimeout(() => {
-        el.style.maxHeight = "0px";
-        el.style.opacity = "0";
-        setTimeout(() => el.remove(), ROLL_MS + 50);
-      }, 150);
+      el.style.maxHeight = "0px";
+      el.style.opacity = "0";
+      setTimeout(() => el.remove(), ROLL_MS + 50);
     });
   }
 
   // Committed lines accumulate instead of replacing each other, so no
   // schedulePaint gate and no per-token streaming — whole lines only.
   function translateLine(src, onResult) {
+    const warm = pickWarm(src); // adopt the in-flight warm-ahead request if any
     if (state.translatorBackend === "hybrid") {
       let gemmaDone = false;
       translateWithLibre(src)
@@ -983,21 +955,16 @@
           if (!gemmaDone) onResult(translated);
         })
         .catch(() => {});
-      translateWithGemma(src)
+      (warm || translateWithGemma(src))
         .then((translated) => {
           gemmaDone = true;
           if (translated) onResult(translated);
         })
         .catch((error) => log("translationError", String(error)));
-    } else if (state.translatorBackend === "gemma") {
-      translateWithGemma(src)
-        .then(onResult)
-        .catch((error) => {
-          onResult("");
-          log("translationError", String(error));
-        });
     } else {
-      translateWithLibre(src)
+      const fresh = () =>
+        state.translatorBackend === "gemma" ? translateWithGemma(src) : translateWithLibre(src);
+      (warm || fresh())
         .then(onResult)
         .catch((error) => {
           onResult("");
@@ -1232,7 +1199,7 @@
       if (siteAdapter && siteAdapter.rolling) {
         state.rollingLines = [];
         state.rollingPending = "";
-        clearProvisional();
+        clearWarm();
         show("");
         return;
       }
