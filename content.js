@@ -964,9 +964,12 @@
     );
     active.slice(0, -2).forEach((el) => {
       el.dataset.rollingOut = "1";
-      el.style.maxHeight = "0px";
-      el.style.opacity = "0";
-      setTimeout(() => el.remove(), ROLL_MS + 50);
+      // Hold the outgoing line briefly so the eye can finish it before it rolls.
+      setTimeout(() => {
+        el.style.maxHeight = "0px";
+        el.style.opacity = "0";
+        setTimeout(() => el.remove(), ROLL_MS + 50);
+      }, 150);
     });
   }
 
