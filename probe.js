@@ -142,6 +142,41 @@
   });
   genericObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
 
+  // Point sampling: ask the browser what is actually rendering at the spots
+  // where subtitles appear. Sees through shadow DOM; identifies canvas/iframe.
+  report.pointSamples = [];
+  report.pointContainers = [];
+  report.canvasOverVideo = false;
+  report.iframes = [...document.querySelectorAll("iframe")].map((f) => {
+    let sameOrigin = true;
+    try { void f.contentDocument.body; } catch { sameOrigin = false; }
+    return { src: (f.src || "").slice(0, 100), sameOrigin };
+  });
+  if (report.iframes.length) console.log(TAG, "iframes:", report.iframes);
+
+  const pointTimer = setInterval(() => {
+    const vr = mainVideo ? mainVideo.getBoundingClientRect() : { left: 0, right: window.innerWidth, top: 0, bottom: window.innerHeight };
+    const x = (vr.left + vr.right) / 2;
+    for (const frac of [0.75, 0.85, 0.93]) {
+      const y = vr.top + (vr.bottom - vr.top) * frac;
+      // composedPath through shadow DOM: elementsFromPoint pierces open shadow roots
+      for (const el of document.elementsFromPoint(x, y)) {
+        if (el.tagName === "CANVAS") report.canvasOverVideo = true;
+        if (el.tagName === "VIDEO" || el.tagName === "CANVAS" || el.tagName === "IFRAME") continue;
+        const text = (el.innerText || el.textContent || "").trim();
+        if (!text || text.length < 2 || text.length > 200 || isClockLike(text)) continue;
+        if (!report.pointSamples.includes(text)) {
+          report.pointSamples.push(text.slice(0, 120));
+          const root = el.getRootNode();
+          const shadowNote = root instanceof ShadowRoot ? ` [in shadow root of ${nodePath(root.host)}]` : "";
+          const path = nodePath(el) + shadowNote;
+          if (!report.pointContainers.includes(path)) report.pointContainers.push(path);
+        }
+        break; // innermost text element at this point is enough
+      }
+    }
+  }, 500);
+
   const cueTimer = setInterval(() => {
     if (!mainVideo || !mainVideo.textTracks) return;
     for (const track of mainVideo.textTracks) {
@@ -158,6 +193,7 @@
     observer.disconnect();
     genericObserver.disconnect();
     clearInterval(cueTimer);
+    clearInterval(pointTimer);
 
     // --- (b) hideability: a non-empty leaf candidate we could opacity-0 ----
     const textCandidate = [...seen].find((c) => (c.innerText || "").trim());
@@ -172,15 +208,19 @@
     // Require at least 2 distinct changing lines; one change could be noise.
     const verdict = report.domTextSamples.length >= 2
       ? "SUPPORTED via DOM scraping (current pipeline)"
-      : report.genericSamples.length >= 2
-        ? "SUPPORTED via DOM scraping, but site uses non-standard subtitle classes — add the container below to candidateRoots()"
+      : report.genericSamples.length >= 2 || report.pointSamples.length >= 2
+        ? "SUPPORTED via DOM scraping, but site uses non-standard subtitle classes/shadow DOM — add the container below to candidateRoots()"
         : report.trackCueSamples.length
           ? "SUPPORTED via textTrack cues (better than scraping — new reader needed)"
-          : report.domCandidates.length
-            ? "INCONCLUSIVE — subtitle-like elements exist but none changed during playback (metadata match? subtitles off? video paused?)"
-            : report.videos
-              ? "NOT READABLE — likely image/canvas subtitles; needs v2 prefetch route"
-              : "NOT READABLE — no <video>; custom player, needs investigation";
+          : report.canvasOverVideo
+            ? "NOT READABLE — canvas-rendered subtitles; needs v2 prefetch route"
+            : report.iframes.some((f) => !f.sameOrigin)
+              ? "INCONCLUSIVE — cross-origin iframe present; player may live there (probe can't see in). Re-run with the iframe as console context."
+              : report.domCandidates.length
+                ? "INCONCLUSIVE — subtitle-like elements exist but none changed during playback (metadata match? subtitles off? video paused?)"
+                : report.videos
+                  ? "NOT READABLE — likely image/canvas subtitles; needs v2 prefetch route"
+                  : "NOT READABLE — no <video>; custom player, needs investigation";
 
     console.log(TAG, "================ PROBE VERDICT ================");
     console.log(TAG, "site:", report.site);
@@ -190,6 +230,9 @@
     console.log(TAG, "DOM subtitle samples:", report.domTextSamples.slice(0, 5));
     console.log(TAG, "generic samples:", report.genericSamples.slice(0, 5));
     console.log(TAG, "generic containers:", report.genericContainers.slice(0, 3));
+    console.log(TAG, "point samples:", report.pointSamples.slice(0, 5));
+    console.log(TAG, "point containers:", report.pointContainers.slice(0, 3));
+    console.log(TAG, "canvas over video:", report.canvasOverVideo);
     console.log(TAG, "track cue samples:", report.trackCueSamples.slice(0, 5));
     console.log(TAG, "===============================================");
   }, WATCH_MS);
