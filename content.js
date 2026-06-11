@@ -27,6 +27,9 @@
     captionHint: "",
     rollingEmptySince: 0,
     prevLines: [], // last 2 source lines, newest last
+    styleProfile: localStorage.getItem("prime-subtitle-styleProfile") || "auto",
+    category: "", // page-declared genre (YouTube meta itemprop)
+    categoryHref: "",
     nameCounts: new Map(),
     glossaryNames: [],
     warm: new Map(),
@@ -124,6 +127,12 @@
       <option>German</option>
       <option>Japanese</option>
     </select>
+    <div style="margin-bottom: 10px; font-size: 13px;">Style:</div>
+    <div id="prime-subtitle-style-options" style="display: flex; gap: 8px; margin-bottom: 12px;">
+      <button data-style="auto" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">Auto</button>
+      <button data-style="formal" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">Formal</button>
+      <button data-style="conversational" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">Casual</button>
+    </div>
     <div style="margin-bottom: 10px; font-size: 13px;">Subtitle size: <span id="prime-subtitle-size-value"></span>px</div>
     <input id="prime-subtitle-size-slider" type="range" min="20" max="60" step="1" style="width: 100%;">
     <div style="display: flex; gap: 8px; margin-top: 12px;">
@@ -183,7 +192,7 @@
   // "Show original" keeps the source captions visible alongside the overlay
   // (dual-subtitle mode); turning the translator off restores them too.
   function applyHideState() {
-    hideCss.disabled = !(state.enabled && !state.showOriginal);
+    hideCss.disabled = !(state.enabled && !state.showOriginal && !musicMode());
     if (hideCss.disabled && state.hiddenNode) {
       state.hiddenNode.style.opacity = "";
       state.hiddenNode.style.textShadow = "";
@@ -275,6 +284,12 @@
       languageSelect.disabled = !gemmaOnly;
       languageSelect.style.opacity = gemmaOnly ? "1" : "0.45";
     }
+    const styleButtons = settingsPanel.querySelectorAll("#prime-subtitle-style-options button");
+    styleButtons.forEach((button) => {
+      const active = button.dataset.style === state.styleProfile;
+      button.style.background = active ? "rgba(24, 119, 242, 0.95)" : "rgba(255,255,255,0.16)";
+      button.style.color = "#fff";
+    });
     const enabledBtn = settingsPanel.querySelector("#prime-subtitle-enabled-toggle");
     if (enabledBtn) {
       enabledBtn.textContent = state.enabled ? "Translator: on" : "Translator: off";
@@ -337,7 +352,7 @@
   function loadSettings() {
     try {
       chrome.storage.sync.get(
-        ["translatorBackend", "gemmaModel", "targetLanguage", "subtitleSize", "enabled", "showOriginal"],
+        ["translatorBackend", "gemmaModel", "targetLanguage", "subtitleSize", "enabled", "showOriginal", "styleProfile"],
         (saved) => {
           if (!saved) return;
           if (saved.translatorBackend) state.translatorBackend = saved.translatorBackend;
@@ -346,6 +361,7 @@
           if (saved.subtitleSize) applySubtitleSize(saved.subtitleSize);
           if (typeof saved.enabled === "boolean") state.enabled = saved.enabled;
           if (typeof saved.showOriginal === "boolean") state.showOriginal = saved.showOriginal;
+          if (saved.styleProfile) state.styleProfile = saved.styleProfile;
           applyHideState();
           if (!state.enabled) {
             statusBadge.textContent = "Translator: off";
@@ -390,6 +406,11 @@
       }
       if (changes.showOriginal && changes.showOriginal.newValue !== state.showOriginal) {
         setShowOriginal(changes.showOriginal.newValue);
+      }
+      if (changes.styleProfile && changes.styleProfile.newValue !== state.styleProfile) {
+        state.styleProfile = changes.styleProfile.newValue;
+        applyHideState();
+        updateBackendButtons();
       }
       if (translationAffected) {
         updateBackendButtons();
@@ -485,7 +506,7 @@
     // Same line under different preceding context can translate differently
     // (pronouns, tense), so the context participates in the key.
     const context = state.prevLines.filter((l) => l !== normalized).join("\n");
-    const cacheKey = `gemma:${state.gemmaModel}:${lang}:${context.slice(-48)}:${normalized}`;
+    const cacheKey = `gemma:${state.gemmaModel}:${lang}:${effectiveStyle()}:${context.slice(-48)}:${normalized}`;
     if (state.translationCache.has(cacheKey)) {
       return state.translationCache.get(cacheKey);
     }
@@ -502,6 +523,7 @@
         // streamed token; the "even if short" clause guards language drift.
         prompt: [
           `Translate the English subtitle into natural ${lang}. Reply with only the ${lang} translation of the subtitle, even if it is short or ambiguous.`,
+          styleInstruction(lang),
           ...(state.glossaryNames.length
             ? [`Transliterate these names consistently: ${state.glossaryNames.join(", ")}.`]
             : []),
@@ -602,6 +624,12 @@
     const playing = video && !video.paused && !video.ended && video.currentTime > 0;
     if (!playing) {
       state.lastCaptionTextAt = Date.now();
+      return;
+    }
+    if (musicMode()) {
+      state.captionHint = "music — showing original lyrics";
+      statusBadge.textContent = `Translator: ${state.captionHint}`;
+      statusBadge.style.background = "rgba(60, 60, 120, 0.85)";
       return;
     }
     if (siteAdapter && siteAdapter.captionsDisabled && siteAdapter.captionsDisabled()) {
@@ -814,6 +842,34 @@
     "They", "What", "When", "Where", "Why", "How", "Not", "You", "Your", "Our",
     "His", "Her", "She", "Him", "For", "With", "From", "Just", "Like", "Right",
   ]);
+
+  // Style profile: register consistency is the cheap quality win — one
+  // steady prompt line beats the model guessing formality per line.
+  const FORMAL_CATEGORIES = ["Education", "Science & Technology", "News & Politics"];
+
+  function refreshCategory() {
+    if (location.href === state.categoryHref) return;
+    state.categoryHref = location.href;
+    const meta = document.querySelector('meta[itemprop="genre"]');
+    state.category = (meta && meta.content) || "";
+  }
+
+  function effectiveStyle() {
+    if (state.styleProfile !== "auto") return state.styleProfile;
+    return FORMAL_CATEGORIES.includes(state.category) ? "formal" : "conversational";
+  }
+
+  // Literal lyric translation is garbage; on music content show the
+  // originals and stand down (auto mode only — overrides win).
+  function musicMode() {
+    return state.styleProfile === "auto" && state.category === "Music";
+  }
+
+  function styleInstruction(lang) {
+    return effectiveStyle() === "formal"
+      ? `Use formal ${lang} register; keep technical and business terms in English.`
+      : `Use natural, conversational ${lang}.`;
+  }
 
   function notePrev(src) {
     state.prevLines.push(src);
@@ -1031,7 +1087,7 @@
   function scheduleWarm(rawLast) {
     // Same cleaning as commitLine, so the warm key matches the commit key.
     const src = cleanAutoCaption((rawLast || "").replace(/^>{2,}\s*/, "").trim());
-    if (!src || isNoise(src) || !isTranslatableEnglish(src)) return;
+    if (musicMode() || !src || isNoise(src) || !isTranslatableEnglish(src)) return;
     state.warmNextSrc = src;
     if (state.warmTimer) return;
     state.warmTimer = setTimeout(fireWarm, WARM_EVERY_MS);
@@ -1070,7 +1126,7 @@
     // Strip broadcast-style speaker markers (">>", ">>>"); they confuse the
     // translation models and carry no meaning for the viewer.
     const src = cleanAutoCaption((rawSrc || "").replace(/^>{2,}\s*/, "").trim());
-    if (!src || isNoise(src) || !isTranslatableEnglish(src)) return;
+    if (musicMode() || !src || isNoise(src) || !isTranslatableEnglish(src)) return;
     if (state.recentCommitted.includes(src)) return;
     state.recentCommitted.push(src);
     if (state.recentCommitted.length > 8) state.recentCommitted.shift();
@@ -1247,7 +1303,7 @@
 
   function startTranslation(text) {
     {
-      if (!isTranslatableEnglish(text)) return;
+      if (musicMode() || !isTranslatableEnglish(text)) return;
       log("subtitle", text);
       noteNames(text);
       const requestId = ++state.activeRequestId;
@@ -1376,6 +1432,17 @@
     button.addEventListener("click", () => setGemmaModel(button.dataset.gemmaModel));
   });
 
+  const styleOptionButtons = settingsPanel.querySelectorAll("#prime-subtitle-style-options button");
+  styleOptionButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      state.styleProfile = button.dataset.style;
+      saveSetting("styleProfile", state.styleProfile);
+      applyHideState(); // override may enter/exit music mode
+      updateBackendButtons();
+      scheduleRead();
+    });
+  });
+
   const enabledToggle = settingsPanel.querySelector("#prime-subtitle-enabled-toggle");
   if (enabledToggle) enabledToggle.addEventListener("click", () => setEnabled(!state.enabled));
   const showOriginalToggle = settingsPanel.querySelector("#prime-subtitle-show-original");
@@ -1431,6 +1498,9 @@
   setInterval(() => {
     watchVideoSeeks();
     positionOverlay();
+    const wasMusic = musicMode();
+    refreshCategory();
+    if (musicMode() !== wasMusic) applyHideState();
     updateCaptionHint();
     // Always re-evaluate the root, not just when it left the DOM: the initial
     // pick can land on a lookalike (e.g. Hotstar's subtitle button icon) that
