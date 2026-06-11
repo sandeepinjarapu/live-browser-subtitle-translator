@@ -19,7 +19,8 @@ This document is the single place where features are proposed, evaluated, and se
 |---|---|---|
 | Target-language setting (not hardcoded Telugu) | Cheapest unlock of a much larger audience; Gemma is already multilingual, the prompt just needs a variable. Libre backend needs a model per language pair. | Easy for Gemma; per-pair effort for Libre |
 | Settings in `chrome.storage.sync` instead of localStorage | Survives site data clearing, syncs across devices, works across OTT domains | Easy |
-| Setup doctor / first-run check | One screen that verifies: Ollama up? CORS ok? model pulled? Libre server up? RAM enough for e4b? Then recommends a backend (your "local system config decides the best model" idea). Removes the #1 failure mode: silent "offline" badges. | Easy–medium |
+| Onboarding flow (supersedes "setup doctor") | Install opens an options page, not the overlay: pick language → pick path ("just works" via hosted endpoint vs "private & free" local) → local path is a guided checklist with live ✅/❌ (extension polls localhost for Ollama/model/CORS/Libre) → finish with a live test translation. Overlay stays dormant until setup completes. Hosted endpoint decision: costs money + privacy questions, but gives a zero-setup path; recommend hosted Libre as default, local Gemma as the quality upgrade. | Medium |
+| Compatibility probe (promoted from v3 — Prime itself needs it) | Some Prime titles (e.g. non-MX-Player shows) render no readable subtitle text — likely image/canvas subtitles or different containers. Probe logs whether text exists in the DOM at all; selector misses are fixable, image-based rendering needs the v2 prefetch route. | Easy to build; findings drive v2 priority |
 | Scene-cut overlay clearing | Linger currently overstays on hard cuts; detect playback jumps via the `<video>` element and clear immediately | Medium |
 | Translation quality pass | Glossary for recurring names/terms, strip stray quotes/preamble from model output, possibly send previous line as context for pronoun consistency | Easy–medium |
 | Package for Chrome Web Store | Versioned releases instead of load-unpacked; required before anyone else can use it | Easy, plus review process |
@@ -43,7 +44,7 @@ Each service needs three things audited: (a) can we *find* the subtitle text (DO
 
 | OTT | Expected difficulty | Notes |
 |---|---|---|
-| Prime Video | Done (DOM) | Prefetch prototype target |
+| Prime Video | Partial (DOM) | Works for MX-Player-sourced shows; other titles render subtitles without readable DOM text (image/canvas suspected) — prefetch prototype target |
 | Netflix | Medium | Subtitles render to a known DOM container; track files (TTML) fetched per language — good prefetch candidate |
 | JioHotstar, Zee5, SonyLIV, MX Player | Unknown, likely medium | Indian OTTs vary; several use standard HLS/DASH with WebVTT |
 | Apple TV+ (web) | Hard | Heavy canvas/custom rendering in places; Safari-first audience |
