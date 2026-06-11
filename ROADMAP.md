@@ -44,7 +44,7 @@ Each service needs three things audited: (a) can we *find* the subtitle text (DO
 
 | OTT | Expected difficulty | Notes |
 |---|---|---|
-| Prime Video | Partial (DOM) | Works for MX-Player-sourced shows; other titles render subtitles without readable DOM text (image/canvas suspected) — prefetch prototype target |
+| Prime Video | **Supported** (verified 2026-06) | Both native Prime titles and MX-Player-sourced shows confirmed working (earlier "image/canvas" suspicion not reproduced on retest with 0.4.x). Keep an eye out for stray titles that render subtitles without DOM text — those become prefetch targets |
 | Netflix | **Supported** (verified 2026-06) | Subtitles in `.player-timedtext` — adapter added 0.4.1; DRM blacks out video capture but subtitle text stays DOM-readable. Track files (TTML) fetched per language — still a good prefetch candidate |
 | JioHotstar | **Supported** (probe-verified 2026-06) | Shaka Player; subtitles in `.shaka-text-container` — selector added to the extension |
 | YouTube | **Supported** (yt-exploration, merged 2026-06) | First rolling-caption site: adapter `rolling: true` enables commit-based translation (whole lines only), a 2-line animated rolling overlay, warm-ahead speculation (one in-flight request, self-pacing for slow models), `>>` speaker-marker handling, and an exact "subtitles off" badge hint from the CC button. Future rolling-caption sites opt in via the same flag. Live-path latency floor reached; further gains belong to v2 prefetch. |
