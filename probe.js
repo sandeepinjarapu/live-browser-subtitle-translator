@@ -18,7 +18,26 @@
     trackCueSamples: [],
     domCandidates: [],
     domTextSamples: [],
+    genericSamples: [],
+    genericContainers: [],
     hideable: "unknown",
+  };
+
+  // Seek-bar timecodes change every second and sit low on screen — exclude.
+  const isClockLike = (text) => /^[\d:.\s\/\-]+$/.test(text);
+
+  const nodePath = (el) => {
+    const parts = [];
+    let cur = el;
+    while (cur && cur.tagName && parts.length < 6) {
+      let part = cur.tagName.toLowerCase();
+      if (cur.id) part += `#${cur.id}`;
+      const cls = typeof cur.className === "string" ? cur.className.trim().split(/\s+/).slice(0, 2).join(".") : "";
+      if (cls) part += `.${cls}`;
+      parts.unshift(part);
+      cur = cur.parentElement;
+    }
+    return parts.join(" > ");
   };
 
   // --- (c) video elements -------------------------------------------------
@@ -91,12 +110,37 @@
       const rect = c.getBoundingClientRect();
       const visible = rect.width > 0 && rect.height > 0;
       const lowOnScreen = rect.top > window.innerHeight * 0.4;
-      if (text && text.length > 1 && visible && lowOnScreen && !report.domTextSamples.includes(text)) {
+      if (text && text.length > 1 && visible && lowOnScreen && !isClockLike(text) && !report.domTextSamples.includes(text)) {
         report.domTextSamples.push(text.slice(0, 120));
       }
     }
   });
   observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+
+  // Generic detector: class names vary per OTT (Hotstar's subtitle container
+  // matched none of our selectors), so also watch the whole document for
+  // changing dialogue-like text over the bottom of the video.
+  const videoRect = mainVideo ? mainVideo.getBoundingClientRect() : null;
+  const genericObserver = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+      if (!el || el.id === "prime-subtitle-overlay") continue;
+      const text = (el.innerText || "").trim();
+      if (!text || text.length < 2 || text.length > 200 || isClockLike(text)) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) continue;
+      const inBottomOfVideo = videoRect
+        ? rect.top > videoRect.top + videoRect.height * 0.55 && rect.top < videoRect.bottom + 10
+        : rect.top > window.innerHeight * 0.55;
+      if (!inBottomOfVideo) continue;
+      if (!report.genericSamples.includes(text)) {
+        report.genericSamples.push(text.slice(0, 120));
+        const path = nodePath(el);
+        if (!report.genericContainers.includes(path)) report.genericContainers.push(path);
+      }
+    }
+  });
+  genericObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
 
   const cueTimer = setInterval(() => {
     if (!mainVideo || !mainVideo.textTracks) return;
@@ -112,6 +156,7 @@
 
   setTimeout(() => {
     observer.disconnect();
+    genericObserver.disconnect();
     clearInterval(cueTimer);
 
     // --- (b) hideability: a non-empty leaf candidate we could opacity-0 ----
@@ -127,13 +172,15 @@
     // Require at least 2 distinct changing lines; one change could be noise.
     const verdict = report.domTextSamples.length >= 2
       ? "SUPPORTED via DOM scraping (current pipeline)"
-      : report.trackCueSamples.length
-        ? "SUPPORTED via textTrack cues (better than scraping — new reader needed)"
-        : report.domCandidates.length && !report.domTextSamples.length
-          ? "INCONCLUSIVE — subtitle-like elements exist but none changed during playback (metadata match? subtitles off? video paused?)"
-          : report.videos
-            ? "NOT READABLE — likely image/canvas subtitles; needs v2 prefetch route"
-            : "NOT READABLE — no <video>; custom player, needs investigation";
+      : report.genericSamples.length >= 2
+        ? "SUPPORTED via DOM scraping, but site uses non-standard subtitle classes — add the container below to candidateRoots()"
+        : report.trackCueSamples.length
+          ? "SUPPORTED via textTrack cues (better than scraping — new reader needed)"
+          : report.domCandidates.length
+            ? "INCONCLUSIVE — subtitle-like elements exist but none changed during playback (metadata match? subtitles off? video paused?)"
+            : report.videos
+              ? "NOT READABLE — likely image/canvas subtitles; needs v2 prefetch route"
+              : "NOT READABLE — no <video>; custom player, needs investigation";
 
     console.log(TAG, "================ PROBE VERDICT ================");
     console.log(TAG, "site:", report.site);
@@ -141,6 +188,8 @@
     console.log(TAG, "video syncable:", report.syncableVideo, `(${report.videos} video element(s))`);
     console.log(TAG, "hideable:", report.hideable);
     console.log(TAG, "DOM subtitle samples:", report.domTextSamples.slice(0, 5));
+    console.log(TAG, "generic samples:", report.genericSamples.slice(0, 5));
+    console.log(TAG, "generic containers:", report.genericContainers.slice(0, 3));
     console.log(TAG, "track cue samples:", report.trackCueSamples.slice(0, 5));
     console.log(TAG, "===============================================");
   }, WATCH_MS);
