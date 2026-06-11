@@ -149,12 +149,15 @@
   // created later too, so per-cue recreated caption nodes are born hidden —
   // unlike hideNode, which races the player. The overlay always shows text
   // (falling back to the original line if translation fails), so this is safe.
+  // YT exploration: leave YouTube's original captions visible so the
+  // translation can be checked against them side-by-side.
+  const keepOriginal = location.hostname === "youtube.com" || location.hostname.endsWith(".youtube.com");
   const hideCss = document.createElement("style");
   hideCss.id = "prime-subtitle-hide-css";
   hideCss.textContent = [
     ".shaka-text-container,",
     ".atvwebplayersdk-captions-text,",
-    ".ytp-caption-window-container,",
+    ...(keepOriginal ? [] : [".ytp-caption-window-container,"]),
     ".atvwebplayersdk-caption {",
     "  opacity: 0 !important;",
     "}",
@@ -910,7 +913,7 @@
         // text spans per cue (fresh spans show through), and the matched node
         // often carries only a hashed class (Prime), so leaf-level rules miss.
         const captionContainer = subtitleNode.closest('.shaka-text-container, [class*="caption" i]');
-        if (captionContainer) {
+        if (captionContainer && !keepOriginal) {
           hideNode(captionContainer);
         }
       }
