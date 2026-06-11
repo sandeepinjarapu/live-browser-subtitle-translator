@@ -47,6 +47,7 @@ Each service needs three things audited: (a) can we *find* the subtitle text (DO
 | Prime Video | Partial (DOM) | Works for MX-Player-sourced shows; other titles render subtitles without readable DOM text (image/canvas suspected) — prefetch prototype target |
 | Netflix | Medium | Subtitles render to a known DOM container; track files (TTML) fetched per language — good prefetch candidate |
 | JioHotstar | **Supported** (probe-verified 2026-06) | Shaka Player; subtitles in `.shaka-text-container` — selector added to the extension |
+| YouTube | **Supported** (yt-exploration, merged 2026-06) | First rolling-caption site: adapter `rolling: true` enables commit-based translation (whole lines only), a 2-line animated rolling overlay, warm-ahead speculation (one in-flight request, self-pacing for slow models), `>>` speaker-marker handling, and an exact "subtitles off" badge hint from the CC button. Future rolling-caption sites opt in via the same flag. Live-path latency floor reached; further gains belong to v2 prefetch. |
 | Zee5, SonyLIV, MX Player | Unknown, likely medium | Indian OTTs vary; several use standard HLS/DASH with WebVTT; any Shaka-based player is now covered |
 | Apple TV+ (web) | Hard | Heavy canvas/custom rendering in places; Safari-first audience |
 | aha, SUNNXT, Eros Now, Lionsgate Play | Unknown | Audit pass needed |
@@ -69,7 +70,7 @@ Each successful trial graduates into a supported site in the matrix below; publi
 
 ## Parking lot (unreviewed ideas)
 
-- Dual-subtitle mode (original + translation simultaneously) for language learners
+- ~~Dual-subtitle mode (original + translation simultaneously)~~ — SHIPPED as the "Original: shown" setting (0.3.22), alongside a translator on/off toggle; both sync across tabs. A "subtitles are off" badge hint also shipped (0.3.23–0.3.25): exact per-adapter signal where available (YouTube CC button), 20s playing-time heuristic elsewhere.
 - Export translated subtitles as an `.srt` file
 - Shared community cache of translated tracks (privacy questions)
 - Auto language detection of source subtitles (non-English originals)
