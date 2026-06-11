@@ -28,6 +28,8 @@
     warmTimer: null,
     subtitleSize: Number(localStorage.getItem("prime-subtitle-size")) || 36,
     translatorBackend: localStorage.getItem("prime-subtitle-backend") || "libre",
+    enabled: localStorage.getItem("prime-subtitle-enabled") !== "false",
+    showOriginal: localStorage.getItem("prime-subtitle-showOriginal") === "true",
     gemmaModel: localStorage.getItem("prime-subtitle-gemma-model") || "gemma4:e2b-it-qat",
     targetLanguage: "Telugu",
     video: null,
@@ -118,6 +120,10 @@
     </select>
     <div style="margin-bottom: 10px; font-size: 13px;">Subtitle size: <span id="prime-subtitle-size-value"></span>px</div>
     <input id="prime-subtitle-size-slider" type="range" min="20" max="60" step="1" style="width: 100%;">
+    <div style="display: flex; gap: 8px; margin-top: 12px;">
+      <button id="prime-subtitle-enabled-toggle" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">Translator: on</button>
+      <button id="prime-subtitle-show-original" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">Original: hidden</button>
+    </div>
     <div style="margin-top: 10px; font-size: 12px; opacity: 0.8;">Click the badge to close.</div>
   `;
 
@@ -155,20 +161,29 @@
   // created later too, so per-cue recreated caption nodes are born hidden —
   // unlike hideNode, which races the player. The overlay always shows text
   // (falling back to the original line if translation fails), so this is safe.
-  // YT exploration: leave YouTube's original captions visible so the
-  // translation can be checked against them side-by-side.
-  const keepOriginal = location.hostname === "youtube.com" || location.hostname.endsWith(".youtube.com");
   const hideCss = document.createElement("style");
   hideCss.id = "prime-subtitle-hide-css";
   hideCss.textContent = [
     ".shaka-text-container,",
     ".atvwebplayersdk-captions-text,",
-    ...(keepOriginal ? [] : [".ytp-caption-window-container,"]),
+    ".ytp-caption-window-container,",
     ".atvwebplayersdk-caption {",
     "  opacity: 0 !important;",
     "}",
   ].join("\n");
   document.documentElement.appendChild(hideCss);
+
+  // "Show original" keeps the source captions visible alongside the overlay
+  // (dual-subtitle mode); turning the translator off restores them too.
+  function applyHideState() {
+    hideCss.disabled = !(state.enabled && !state.showOriginal);
+    if (hideCss.disabled && state.hiddenNode) {
+      state.hiddenNode.style.opacity = "";
+      state.hiddenNode.style.textShadow = "";
+      state.hiddenNode = null;
+    }
+  }
+  applyHideState();
 
   function log(...args) {
     console.log("[Prime Subtitle Light]", ...args);
@@ -253,6 +268,47 @@
       languageSelect.disabled = !gemmaOnly;
       languageSelect.style.opacity = gemmaOnly ? "1" : "0.45";
     }
+    const enabledBtn = settingsPanel.querySelector("#prime-subtitle-enabled-toggle");
+    if (enabledBtn) {
+      enabledBtn.textContent = state.enabled ? "Translator: on" : "Translator: off";
+      enabledBtn.style.background = state.enabled ? "rgba(24, 119, 242, 0.95)" : "rgba(255,255,255,0.16)";
+      enabledBtn.style.color = "#fff";
+    }
+    const originalBtn = settingsPanel.querySelector("#prime-subtitle-show-original");
+    if (originalBtn) {
+      originalBtn.textContent = state.showOriginal ? "Original: shown" : "Original: hidden";
+      originalBtn.style.background = state.showOriginal ? "rgba(24, 119, 242, 0.95)" : "rgba(255,255,255,0.16)";
+      originalBtn.style.color = "#fff";
+    }
+  }
+
+  function setEnabled(on) {
+    state.enabled = !!on;
+    saveSetting("enabled", state.enabled);
+    applyHideState();
+    updateBackendButtons();
+    if (!state.enabled) {
+      clearTimeout(state.stabilizeTimer);
+      clearTimeout(state.clearTimer);
+      clearWarm();
+      state.rollingLines = [];
+      state.rollingPending = "";
+      state.lastText = "";
+      state.lastTranslatedText = "";
+      show("");
+      statusBadge.textContent = "Translator: off";
+      statusBadge.style.background = "rgba(0,0,0,0.72)";
+      return;
+    }
+    pingTranslator();
+    scheduleRead();
+  }
+
+  function setShowOriginal(on) {
+    state.showOriginal = !!on;
+    saveSetting("showOriginal", state.showOriginal);
+    applyHideState();
+    updateBackendButtons();
   }
 
   function setGemmaModel(model) {
@@ -274,13 +330,20 @@
   function loadSettings() {
     try {
       chrome.storage.sync.get(
-        ["translatorBackend", "gemmaModel", "targetLanguage", "subtitleSize"],
+        ["translatorBackend", "gemmaModel", "targetLanguage", "subtitleSize", "enabled", "showOriginal"],
         (saved) => {
           if (!saved) return;
           if (saved.translatorBackend) state.translatorBackend = saved.translatorBackend;
           if (saved.gemmaModel) state.gemmaModel = saved.gemmaModel;
           if (saved.targetLanguage) state.targetLanguage = saved.targetLanguage;
           if (saved.subtitleSize) applySubtitleSize(saved.subtitleSize);
+          if (typeof saved.enabled === "boolean") state.enabled = saved.enabled;
+          if (typeof saved.showOriginal === "boolean") state.showOriginal = saved.showOriginal;
+          applyHideState();
+          if (!state.enabled) {
+            statusBadge.textContent = "Translator: off";
+            statusBadge.style.background = "rgba(0,0,0,0.72)";
+          }
           const languageSelect = settingsPanel.querySelector("#prime-subtitle-language");
           if (languageSelect) languageSelect.value = state.targetLanguage;
           updateBackendButtons();
@@ -314,6 +377,12 @@
       }
       if (changes.subtitleSize && Number(changes.subtitleSize.newValue) !== state.subtitleSize) {
         applySubtitleSize(changes.subtitleSize.newValue);
+      }
+      if (changes.enabled && changes.enabled.newValue !== state.enabled) {
+        setEnabled(changes.enabled.newValue);
+      }
+      if (changes.showOriginal && changes.showOriginal.newValue !== state.showOriginal) {
+        setShowOriginal(changes.showOriginal.newValue);
       }
       if (translationAffected) {
         updateBackendButtons();
@@ -502,6 +571,11 @@
   }
 
   async function pingTranslator() {
+    if (!state.enabled) {
+      statusBadge.textContent = "Translator: off";
+      statusBadge.style.background = "rgba(0,0,0,0.72)";
+      return;
+    }
     const check = async (url) => {
       const res = await bgFetch(url, { cache: "no-store" });
       if (!res.ok) throw new Error(String(res.status));
@@ -982,6 +1056,7 @@
   }
 
   function read() {
+    if (!state.enabled) return;
     const text = extractText(state.subtitleRoot);
     if (siteAdapter && siteAdapter.rolling) {
       readRolling(text);
@@ -1045,6 +1120,7 @@
 
   function startTranslation(text) {
     {
+      if (!isTranslatableEnglish(text)) return;
       log("subtitle", text);
       const requestId = ++state.activeRequestId;
       // Keep the previous translation visible while the next one is pending
@@ -1123,7 +1199,7 @@
         // text spans per cue (fresh spans show through), and the matched node
         // often carries only a hashed class (Prime), so leaf-level rules miss.
         const captionContainer = subtitleNode.closest('.shaka-text-container, [class*="caption" i]');
-        if (captionContainer && !keepOriginal) {
+        if (captionContainer && !state.showOriginal) {
           hideNode(captionContainer);
         }
       }
@@ -1170,6 +1246,11 @@
   gemmaModelButtons.forEach((button) => {
     button.addEventListener("click", () => setGemmaModel(button.dataset.gemmaModel));
   });
+
+  const enabledToggle = settingsPanel.querySelector("#prime-subtitle-enabled-toggle");
+  if (enabledToggle) enabledToggle.addEventListener("click", () => setEnabled(!state.enabled));
+  const showOriginalToggle = settingsPanel.querySelector("#prime-subtitle-show-original");
+  if (showOriginalToggle) showOriginalToggle.addEventListener("click", () => setShowOriginal(!state.showOriginal));
 
   const languageSelect = settingsPanel.querySelector("#prime-subtitle-language");
   if (languageSelect) {
