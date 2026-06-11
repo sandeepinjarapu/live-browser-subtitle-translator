@@ -172,7 +172,9 @@
       return;
     }
     box.style.left = `${rect.left + rect.width / 2}px`;
-    box.style.bottom = `${Math.max(0, window.innerHeight - rect.bottom) + rect.height * 0.14}px`;
+    // 7% of video height matches the original fullscreen position; the 64px
+    // floor keeps the overlay above player controls in small windowed layouts.
+    box.style.bottom = `${Math.max(0, window.innerHeight - rect.bottom) + Math.max(rect.height * 0.07, 64)}px`;
   }
 
   function show(text) {
@@ -507,7 +509,7 @@
       roots: [".ytp-caption-window-container"],
       // Auto-captions roll word-by-word; translate only once a line has
       // stopped changing for this long, or every word restarts the request.
-      stabilizeMs: 600,
+      stabilizeMs: 900,
     },
     {
       hosts: ["primevideo.com", "amazon.com", "amazon.in"],
