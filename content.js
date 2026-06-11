@@ -805,8 +805,7 @@
     if (!text) {
       if (state.rollingPending || state.rollingLines.length) {
         state.rollingPending = "";
-        state.provisionalSrc = "";
-        state.provisionalOut = "";
+        clearProvisional();
         clearTimeout(state.stabilizeTimer);
         const lingerMs = Math.min(5000, Math.max(2000, (box.textContent || "").length * 90));
         clearTimeout(state.clearTimer);
@@ -844,9 +843,22 @@
   // Live provisional zone: the still-growing line, translated by Libre on
   // every change (~50ms, fast enough to keep word pace; Gemma is not).
   // Continuity over fidelity — the committed line above is the clean record.
+  // Repaint the provisional row at a calm cadence, not per word: collect the
+  // latest text and translate it on a fixed beat.
+  const PROVISIONAL_EVERY_MS = 700;
+
   function updateProvisional(rawLast) {
     const src = (rawLast || "").replace(/^>{2,}\s*/, "").trim();
-    if (!src || isNoise(src) || !isTranslatableEnglish(src) || src === state.provisionalSrc) return;
+    if (!src || isNoise(src) || !isTranslatableEnglish(src)) return;
+    state.provisionalNextSrc = src;
+    if (state.provisionalTimer) return;
+    state.provisionalTimer = setTimeout(fireProvisional, PROVISIONAL_EVERY_MS);
+  }
+
+  function fireProvisional() {
+    state.provisionalTimer = null;
+    const src = state.provisionalNextSrc;
+    if (!src || src === state.provisionalSrc) return;
     state.provisionalSrc = src;
     translateWithLibre(src)
       .then((out) => {
@@ -864,7 +876,8 @@
     if (!el) {
       el = document.createElement("div");
       el.id = "prime-subtitle-provisional";
-      el.style.cssText = "font-style: italic; opacity: 0.65";
+      el.style.cssText =
+        "font-style: italic; opacity: 0.4; font-size: 0.72em; font-weight: 400; text-align: left";
       box.appendChild(el); // always the bottom row; committed lines insert above
     }
     return el;
@@ -873,6 +886,9 @@
   function clearProvisional() {
     state.provisionalSrc = "";
     state.provisionalOut = "";
+    state.provisionalNextSrc = "";
+    clearTimeout(state.provisionalTimer);
+    state.provisionalTimer = null;
     const el = box.querySelector("#prime-subtitle-provisional");
     if (el) el.textContent = "";
   }
