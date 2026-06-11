@@ -1,25 +1,24 @@
 #!/bin/bash
+# One-time installer: registers both translation backends as login services
+# (LaunchAgents), so nothing needs to be started manually after reboots.
+# Safe to re-run; it refreshes the installed agents.
+set -e
 cd "$(dirname "$0")"
 
-# Allow the extension's browser-origin requests to reach Ollama (Gemma backend).
-# launchctl setenv does not survive reboots, so set it on every start.
-# chrome-extension://* is required: backend calls go through the extension's
-# background service worker, whose requests carry the extension origin.
-launchctl setenv OLLAMA_ORIGINS "chrome-extension://*,https://www.primevideo.com,https://*.primevideo.com,https://*.amazon.com,https://*.amazon.in,https://www.hotstar.com,https://*.hotstar.com"
-# Models live in the renamed-for-iCloud folder; Ollama defaults to ~/.ollama otherwise.
-launchctl setenv OLLAMA_MODELS "$PWD/.ollama-models.nosync"
-# Models live in a .nosync folder so iCloud does not upload/evict them.
-launchctl setenv OLLAMA_MODELS "$PWD/.ollama-models.nosync"
-if curl -s --max-time 2 -o /dev/null -H "Origin: https://www.primevideo.com" --fail http://127.0.0.1:11434/api/tags; then
-  echo "Ollama is up and accepts Prime Video origins."
-else
-  echo "Restarting Ollama to pick up OLLAMA_ORIGINS..."
-  pkill -f Ollama.app 2>/dev/null
-  sleep 2
-  open -a Ollama 2>/dev/null || echo "Ollama app not found - install it for the Gemma backend."
+ST="$HOME/.subtitle-translator"
+if [ ! -d "$ST/venv" ]; then
+  echo "Expected runtime at $ST (venv, hf-cache, ollama-models)."
+  echo "See README 'Run the local services' for first-time setup."
+  exit 1
 fi
-source .venv.nosync/bin/activate
-export HF_HOME="$PWD/.hf-cache.nosync"
-export HF_HUB_DISABLE_XET=1
-export HF_HUB_ENABLE_HF_TRANSFER=0
-python local_translate_server.py
+
+cp local_translate_server.py "$ST/"
+cp launchd/com.subtitle-translator.libre.plist launchd/com.subtitle-translator.ollama-env.plist ~/Library/LaunchAgents/
+
+launchctl bootout "gui/$(id -u)/com.subtitle-translator.libre" 2>/dev/null || true
+launchctl bootout "gui/$(id -u)/com.subtitle-translator.ollama-env" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.subtitle-translator.libre.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.subtitle-translator.ollama-env.plist
+
+echo "Installed. Both translators now start at login and recover on their own."
+echo "Logs: /tmp/subtitle-translator-libre.log and /tmp/subtitle-translator-ollama-env.log"

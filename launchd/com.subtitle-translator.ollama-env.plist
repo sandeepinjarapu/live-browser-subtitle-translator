@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.subtitle-translator.ollama-env</string>
+  <key>RunAtLoad</key><true/>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>launchctl setenv OLLAMA_ORIGINS "chrome-extension://*,https://www.primevideo.com,https://*.primevideo.com,https://*.amazon.com,https://*.amazon.in,https://www.hotstar.com,https://*.hotstar.com"; launchctl setenv OLLAMA_MODELS "/Users/sandeepinjarapu/.subtitle-translator/ollama-models"; sleep 8; if ! curl -s --max-time 3 -o /dev/null --fail -H "Origin: https://www.primevideo.com" http://127.0.0.1:11434/api/tags; then pkill -f Ollama.app; sleep 2; open -a Ollama; fi</string>
+  </array>
+  <key>StandardOutPath</key><string>/tmp/subtitle-translator-ollama-env.log</string>
+  <key>StandardErrorPath</key><string>/tmp/subtitle-translator-ollama-env.log</string>
+</dict>
+</plist>

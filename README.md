@@ -19,20 +19,15 @@ Minimal Chrome extension to verify that Prime Video subtitles are readable from 
 
 This project now uses a local translator on `http://127.0.0.1:5000` based on `Helsinki-NLP/opus-mt-en-dra`.
 
-### Run the local server
+### Run the local services
 
-Two options:
-
-1. Double-click [`start_local_server.command`](start_local_server.command)
-2. Or run this in Terminal:
+Both backends run as login services (LaunchAgents) — nothing to start manually, and they survive reboots. One-time install (re-run after editing `local_translate_server.py` or the plists):
 
 ```bash
-source .venv.nosync/bin/activate
-export HF_HOME="$PWD/.hf-cache.nosync"
-export HF_HUB_DISABLE_XET=1
-export HF_HUB_ENABLE_HF_TRANSFER=0
-python local_translate_server.py
+./start_local_server.command
 ```
+
+Runtime lives in `~/.subtitle-translator/` (venv, HF cache, Ollama models) — outside Documents because macOS blocks launchd agents from reading Documents, and outside iCloud sync. The [`launchd/`](launchd) folder holds the two agent definitions: the Libre server (kept alive), and an agent that sets `OLLAMA_ORIGINS`/`OLLAMA_MODELS` at login and restarts Ollama if its CORS config is stale. Logs land in `/tmp/subtitle-translator-*.log`.
 
 ## Gemma backend (Ollama)
 
@@ -41,22 +36,13 @@ The settings panel (click the status badge) can switch translation to a local Ge
 Requirements:
 
 1. Install the [Ollama](https://ollama.com) app and pull a model: `ollama pull gemma4:e2b-it-qat` (4.3 GB, fast) and/or `ollama pull gemma4:e4b` (9.6 GB, bigger).
-2. Ollama must allow browser requests from Prime Video origins, or it answers 403 and the badge shows "Gemma offline":
+2. Ollama must allow requests from the extension and the streaming sites, or it answers 403 and the badge shows "Gemma offline". The `ollama-env` LaunchAgent handles this at every login (`chrome-extension://*` plus the supported OTT origins); no manual steps.
 
-```bash
-launchctl setenv OLLAMA_ORIGINS "https://www.primevideo.com,https://*.primevideo.com,https://*.amazon.com,https://*.amazon.in"
-# then restart the Ollama app
-```
+### Current disk usage (in `~/.subtitle-translator/`)
 
-`launchctl setenv` does not survive a reboot. `start_local_server.command` sets it (and restarts Ollama if needed) on every start, so using the start script is enough.
-
-### Current disk usage
-
-- `.venv.nosync`: about `498 MB`
-- `.hf-cache.nosync`: about `592 MB`
-
-The heavy local folders (`.ollama-models.nosync`, `.hf-cache.nosync`, `.venv.nosync`) use a `.nosync` suffix so iCloud Drive skips them.
-- total local translation footprint: about `1.1 GB`
+- `venv`: about `498 MB`
+- `hf-cache`: about `592 MB`
+- `ollama-models`: about `13 GB` (both Gemma models)
 
 ## Compatibility probe
 
