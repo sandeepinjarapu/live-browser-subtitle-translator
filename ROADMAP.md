@@ -20,7 +20,7 @@ This document is the single place where features are proposed, evaluated, and se
 | Target-language setting (not hardcoded Telugu) | Cheapest unlock of a much larger audience; Gemma is already multilingual, the prompt just needs a variable. Libre backend needs a model per language pair. | Easy for Gemma; per-pair effort for Libre |
 | Settings in `chrome.storage.sync` instead of localStorage | Survives site data clearing, syncs across devices, works across OTT domains | Easy |
 | Onboarding flow (supersedes "setup doctor") | Install opens an options page, not the overlay: pick language → pick path ("just works" via hosted endpoint vs "private & free" local) → local path is a guided checklist with live ✅/❌ (extension polls localhost for Ollama/model/CORS/Libre) → finish with a live test translation. Overlay stays dormant until setup completes. Hosted endpoint decision: costs money + privacy questions, but gives a zero-setup path; recommend hosted Libre as default, local Gemma as the quality upgrade. | Medium |
-| Compatibility probe (promoted from v3 — Prime itself needs it) | Some Prime titles (e.g. non-MX-Player shows) render no readable subtitle text — likely image/canvas subtitles or different containers. Probe logs whether text exists in the DOM at all; selector misses are fixable, image-based rendering needs the v2 prefetch route. | Easy to build; findings drive v2 priority |
+| Compatibility probe (diagnostic) | On any video page, report three findings: (a) readable subtitle text in the DOM? (b) original hideable cleanly? (c) normal `<video>` to sync against? Generalizes existing root-picking logic into a logger. Turns "does OTT X work?" into a 5-minute test; findings feed the v3 support matrix and decide which sites need the v2 prefetch route. | Easy |
 | Scene-cut overlay clearing | Linger currently overstays on hard cuts; detect playback jumps via the `<video>` element and clear immediately | Medium |
 | Translation quality pass | Glossary for recurring names/terms, strip stray quotes/preamble from model output, possibly send previous line as context for pronoun consistency | Easy–medium |
 | Package for Chrome Web Store | Versioned releases instead of load-unpacked; required before anyone else can use it | Easy, plus review process |
@@ -50,7 +50,9 @@ Each service needs three things audited: (a) can we *find* the subtitle text (DO
 | Apple TV+ (web) | Hard | Heavy canvas/custom rendering in places; Safari-first audience |
 | aha, SUNNXT, Eros Now, Lionsgate Play | Unknown | Audit pass needed |
 
-Plan: build a small **compatibility probe** page-script that, on any video site, reports which of (a)/(b)/(c) hold — turning support questions into a 5-minute test instead of a project each. Publish the resulting support matrix in the README.
+**Entry point: "Try on this site" probe trial.** Click the extension on any OTT → it requests optional host permission for that site, injects, runs the v1 probe, and if subtitle-like text is found, attempts the full live pipeline (detect → translate → hide → overlay), reporting what worked. Probe (v1 diagnostic) and trial (v3 runtime) in one flow. Requires: optional host permissions in the manifest, and de-Prime-ing the noise filters (`isNoise`/`narrowText` contain Prime-specific strings).
+
+Each successful trial graduates into a supported site in the matrix below; publish the matrix in the README.
 
 ## v4 — Browser coverage
 
