@@ -137,6 +137,21 @@
 
   ensureOverlayHost();
 
+  // Hide originals via stylesheet on known players: CSS applies to elements
+  // created later too, so per-cue recreated caption nodes are born hidden —
+  // unlike hideNode, which races the player. The overlay always shows text
+  // (falling back to the original line if translation fails), so this is safe.
+  const hideCss = document.createElement("style");
+  hideCss.id = "prime-subtitle-hide-css";
+  hideCss.textContent = [
+    ".shaka-text-container,",
+    ".atvwebplayersdk-captions-text,",
+    ".atvwebplayersdk-caption {",
+    "  opacity: 0 !important;",
+    "}",
+  ].join("\n");
+  document.documentElement.appendChild(hideCss);
+
   function log(...args) {
     console.log("[Prime Subtitle Light]", ...args);
   }
