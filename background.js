@@ -2,6 +2,29 @@
 // under the page's CSP (Hotstar blocks localhost); the service worker uses
 // the extension's own host_permissions instead.
 
+// "Try on this site": toolbar click on any OTT requests permission for that
+// origin, injects the pipeline now, and registers it for future visits.
+chrome.action.onClicked.addListener(async (tab) => {
+  if (!tab.url || !/^https?:/.test(tab.url)) return;
+  const originPattern = `${new URL(tab.url).origin}/*`;
+  const granted = await chrome.permissions.request({ origins: [originPattern] });
+  if (!granted) return;
+  try {
+    await chrome.scripting.registerContentScripts([
+      {
+        id: originPattern,
+        matches: [originPattern],
+        js: ["content.js"],
+        runAt: "document_idle",
+        persistAcrossSessions: true,
+      },
+    ]);
+  } catch {
+    // already registered for this origin
+  }
+  await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "fetch") {
     fetch(msg.url, msg.init)

@@ -1,4 +1,8 @@
 (function () {
+  // Injected both by manifest matches and by the "Try on this site" action.
+  if (window.__subtitleTranslatorLoaded) return;
+  window.__subtitleTranslatorLoaded = true;
+
   const state = {
     subtitleRoot: null,
     lastText: "",
@@ -489,6 +493,16 @@
         ".atvwebplayersdk-caption",
         ".atvwebplayersdk-captions-container",
       ],
+      noiseLines: [
+        /^(x-ray|all|more like this|details|cast|episodes?)$/i,
+        /^crime\s+\d+/i,
+        /^made in india:/i,
+        /^season\s+\d+,\s*ep\.\s*\d+/i,
+        /^the watch project$/i,
+        /uses about/i,
+        /quality/i,
+        /^(crime|episode|season)\s+\d+/i,
+      ],
     },
   ];
   const siteAdapter =
@@ -555,30 +569,30 @@
     return best;
   }
 
+  // Generic noise: clocks/timestamps and player chrome common to all OTTs.
+  // Site-specific UI strings live in the adapter's noiseLines.
+  const GENERIC_NOISE = [
+    /^[0-9]+(:[0-9]{2})?(\s*\/\s*[0-9]{1,2}:[0-9]{2})?$/,
+    /^[0-9]{1,2}:[0-9]{2}\s*\/\s*[0-9]{1,2}:[0-9]{2}$/,
+    /next episode/i,
+    /^[\d:.\s\/\-]+$/,
+  ];
+
+  function noisePatterns() {
+    return GENERIC_NOISE.concat((siteAdapter && siteAdapter.noiseLines) || []);
+  }
+
   function isNoise(text) {
-    return (
-      !text ||
-      text.length < 2 ||
-      /^[0-9]+(:[0-9]{2})?(\s*\/\s*[0-9]{1,2}:[0-9]{2})?$/.test(text) ||
-      /next episode/i.test(text) ||
-      /uses about/i.test(text) ||
-      /quality/i.test(text) ||
-      /^(crime|episode|season)\s+\d+/i.test(text)
-    );
+    return !text || text.length < 2 || noisePatterns().some((re) => re.test(text));
   }
 
   function narrowText(text) {
+    const patterns = noisePatterns();
     const lines = text
       .split(/\n+/)
       .map((line) => line.trim())
       .filter(Boolean)
-      .filter((line) => !/^(x-ray|all|more like this|details|cast|episodes?)$/i.test(line))
-      .filter((line) => !/^[0-9]{1,2}:[0-9]{2}\s*\/\s*[0-9]{1,2}:[0-9]{2}$/.test(line))
-      .filter((line) => !/^next episode$/i.test(line))
-      .filter((line) => !/^crime\s+\d+/i.test(line))
-      .filter((line) => !/^made in india:/i.test(line))
-      .filter((line) => !/^season\s+\d+,\s*ep\.\s*\d+/i.test(line))
-      .filter((line) => !/^the watch project$/i.test(line));
+      .filter((line) => !patterns.some((re) => re.test(line)));
     if (lines.length === 0) return "";
     return lines.join("\n");
   }

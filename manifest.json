@@ -1,9 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Prime Video Subtitle Probe",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Logs Prime Video subtitle text changes so we can verify DOM access.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "scripting"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "action": {
+    "default_title": "Try subtitle translation on this site"
+  },
   "background": {
     "service_worker": "background.js"
   },
