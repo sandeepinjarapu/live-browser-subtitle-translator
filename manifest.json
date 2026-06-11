@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Prime Video Subtitle Probe",
-  "version": "0.3.1",
-  "description": "Logs Prime Video subtitle text changes so we can verify DOM access.",
+  "name": "Live Subtitle Translator",
+  "version": "0.3.2",
+  "description": "Translates streaming subtitles in real time using local, private AI models. Works on Prime Video and JioHotstar out of the box; try it on any site from the toolbar.",
   "permissions": ["storage", "scripting", "activeTab"],
   "optional_host_permissions": ["https://*/*", "http://*/*"],
   "action": {
