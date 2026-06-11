@@ -840,9 +840,49 @@
     });
   }
 
+  // The box is bottom-anchored, so a new line growing in at the bottom
+  // pushes the previous line up — same motion as YouTube's caption window.
+  const ROLL_MS = 300;
+
   function renderRolling() {
-    const outs = state.rollingLines.slice(-2).map((e) => e.out).filter(Boolean);
-    if (outs.length) show(outs.join("\n"));
+    const entries = state.rollingLines.filter((e) => e.out);
+    if (!entries.length) return;
+    positionOverlay();
+    box.style.display = "block";
+    entries.forEach((entry, i) => {
+      if (entry.el) {
+        // Hybrid swap: update text in place, no motion.
+        if (entry.el.textContent !== entry.out) {
+          entry.el.textContent = entry.out;
+          entry.el.style.maxHeight = `${entry.el.scrollHeight}px`;
+        }
+        return;
+      }
+      const el = document.createElement("div");
+      entry.el = el;
+      el.textContent = entry.out;
+      el.style.cssText = [
+        "overflow: hidden",
+        "max-height: 0",
+        "opacity: 0",
+        `transition: max-height ${ROLL_MS}ms ease, opacity ${ROLL_MS}ms ease`,
+      ].join(";");
+      // Translations can resolve out of order; keep the spoken order.
+      const next = entries.slice(i + 1).find((e) => e.el);
+      box.insertBefore(el, next ? next.el : null);
+      requestAnimationFrame(() => {
+        el.style.maxHeight = `${el.scrollHeight}px`;
+        el.style.opacity = "1";
+      });
+    });
+    // Roll the oldest line out once more than two are showing.
+    const active = [...box.children].filter((el) => !el.dataset.rollingOut);
+    active.slice(0, -2).forEach((el) => {
+      el.dataset.rollingOut = "1";
+      el.style.maxHeight = "0px";
+      el.style.opacity = "0";
+      setTimeout(() => el.remove(), ROLL_MS + 50);
+    });
   }
 
   // Committed lines accumulate instead of replacing each other, so no
