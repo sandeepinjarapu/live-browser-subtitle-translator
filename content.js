@@ -23,6 +23,8 @@
     rollingLines: [],
     rollingPending: "",
     recentCommitted: [],
+    lastCaptionTextAt: Date.now(),
+    captionHint: "",
     warm: new Map(),
     warmNextSrc: "",
     warmTimer: null,
@@ -570,12 +572,36 @@
     return state.translatorBackend === "gemma" ? translateWithGemma(text) : translateWithLibre(text);
   }
 
+  // Advisory only — never gates settings. The adapter signal (CC button
+  // state) is exact; the generic fallback is patient (20s of playback with
+  // no caption text) because silent stretches are normal.
+  function updateCaptionHint() {
+    state.captionHint = "";
+    if (!state.enabled) return;
+    const video = state.video || document.querySelector("video");
+    const playing = video && !video.paused && !video.ended && video.currentTime > 0;
+    if (!playing) {
+      state.lastCaptionTextAt = Date.now();
+      return;
+    }
+    if (siteAdapter && siteAdapter.captionsDisabled && siteAdapter.captionsDisabled()) {
+      state.captionHint = "turn on subtitles in the player";
+    } else if (Date.now() - state.lastCaptionTextAt > 20000) {
+      state.captionHint = "no subtitles found — is CC on?";
+    }
+    if (state.captionHint) {
+      statusBadge.textContent = `Translator: ${state.captionHint}`;
+      statusBadge.style.background = "rgba(140, 100, 20, 0.85)";
+    }
+  }
+
   async function pingTranslator() {
     if (!state.enabled) {
       statusBadge.textContent = "Translator: off";
       statusBadge.style.background = "rgba(0,0,0,0.72)";
       return;
     }
+    if (state.captionHint) return; // the hint owns the badge while active
     const check = async (url) => {
       const res = await bgFetch(url, { cache: "no-store" });
       if (!res.ok) throw new Error(String(res.status));
@@ -612,6 +638,11 @@
     {
       hosts: ["youtube.com"],
       roots: [".ytp-caption-window-container"],
+      // Precise "subtitles are off" signal: YT's CC button exposes its state.
+      captionsDisabled: () => {
+        const btn = document.querySelector(".ytp-subtitles-button");
+        return !!btn && btn.offsetParent !== null && btn.getAttribute("aria-pressed") !== "true";
+      },
       // Auto-captions roll word-by-word; translate only once a line has
       // stopped changing for this long, or every word restarts the request.
       stabilizeMs: 250,
@@ -1058,6 +1089,7 @@
   function read() {
     if (!state.enabled) return;
     const text = extractText(state.subtitleRoot);
+    if (text) state.lastCaptionTextAt = Date.now();
     if (siteAdapter && siteAdapter.rolling) {
       readRolling(text);
       return;
@@ -1301,6 +1333,7 @@
   setInterval(() => {
     watchVideoSeeks();
     positionOverlay();
+    updateCaptionHint();
     // Always re-evaluate the root, not just when it left the DOM: the initial
     // pick can land on a lookalike (e.g. Hotstar's subtitle button icon) that
     // never gets removed, and the real caption container appears later.
