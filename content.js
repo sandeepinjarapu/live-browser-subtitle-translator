@@ -26,6 +26,9 @@
     lastCaptionTextAt: Date.now(),
     captionHint: "",
     rollingEmptySince: 0,
+    prevSrc: "",
+    nameCounts: new Map(),
+    glossaryNames: [],
     warm: new Map(),
     warmNextSrc: "",
     warmTimer: null,
@@ -399,7 +402,7 @@
   }
 
   function cleanTranslation(text) {
-    let cleaned = text.trim().replace(/^(here(?:'|’)s the translation:?|translation:?)\s*/i, "");
+    let cleaned = text.trim().replace(/^(here(?:'|’)s the translation:?|translation:?|subtitle:?)\s*/i, "");
     if (
       (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
       (cleaned.startsWith("“") && cleaned.endsWith("”"))
@@ -478,7 +481,10 @@
 
     // Hybrid pairs Gemma with Telugu-only Libre, so both stages must match.
     const lang = state.translatorBackend === "hybrid" ? "Telugu" : state.targetLanguage;
-    const cacheKey = `gemma:${state.gemmaModel}:${lang}:${normalized}`;
+    // Same line under different preceding context can translate differently
+    // (pronouns, tense), so the context participates in the key.
+    const context = state.prevSrc && state.prevSrc !== normalized ? state.prevSrc : "";
+    const cacheKey = `gemma:${state.gemmaModel}:${lang}:${context.slice(-48)}:${normalized}`;
     if (state.translationCache.has(cacheKey)) {
       return state.translationCache.get(cacheKey);
     }
@@ -494,9 +500,13 @@
         // Short prompt: prompt tokens are prefill time before the first
         // streamed token; the "even if short" clause guards language drift.
         prompt: [
-          `Translate the English subtitle into natural ${lang}. Reply with only the ${lang} translation, even if the line is short or ambiguous.`,
+          `Translate the English subtitle into natural ${lang}. Reply with only the ${lang} translation of the subtitle, even if it is short or ambiguous.`,
+          ...(state.glossaryNames.length
+            ? [`Transliterate these names consistently: ${state.glossaryNames.join(", ")}.`]
+            : []),
+          ...(context ? [`Previous line (context only, do not translate): ${context}`] : []),
           "",
-          normalized,
+          `Subtitle: ${normalized}`,
         ].join("\n"),
         stream: true,
         keep_alive: "30m",
@@ -782,6 +792,37 @@
     return !text || text.length < 2 || noisePatterns().some((re) => re.test(text));
   }
 
+  // Auto-captions carry sound tags and verbal fillers that waste model
+  // attention and pollute output; spoken-word artifacts, not dialogue.
+  function cleanAutoCaption(text) {
+    return text
+      .replace(/\[[^\]]*\]/g, " ") // [Music], [Applause], [Laughter]
+      .replace(/\b(um+|uh+|erm?)\b[,.]?/gi, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+
+  // Glossary: recurring capitalized words are almost always names/terms.
+  // Feeding them to Gemma keeps transliteration consistent across lines.
+  const NAME_STOPWORDS = new Set([
+    "The", "But", "And", "Yes", "Yeah", "Okay", "Now", "Then", "This", "That",
+    "They", "What", "When", "Where", "Why", "How", "Not", "You", "Your", "Our",
+    "His", "Her", "She", "Him", "For", "With", "From", "Just", "Like", "Right",
+  ]);
+
+  function noteNames(text) {
+    const words = text.match(/\b[A-Z][a-z]{2,}\b/g) || [];
+    for (const word of words) {
+      if (NAME_STOPWORDS.has(word)) continue;
+      const count = (state.nameCounts.get(word) || 0) + 1;
+      state.nameCounts.set(word, count);
+      if (count === 2) {
+        state.glossaryNames.push(word);
+        if (state.glossaryNames.length > 8) state.glossaryNames.shift();
+      }
+    }
+  }
+
   // Guard against non-English input (e.g. the user left YouTube's own
   // auto-translate on): en->Telugu models turn it into gibberish. A real
   // English line is overwhelmingly Latin letters.
@@ -939,6 +980,7 @@
         clearTimeout(state.clearTimer);
         state.clearTimer = setTimeout(() => {
           state.rollingLines = [];
+          state.prevSrc = ""; // scene break — stale context misleads more than it helps
           show("");
         }, lingerMs);
       }
@@ -977,7 +1019,8 @@
   const WARM_EVERY_MS = 600;
 
   function scheduleWarm(rawLast) {
-    const src = (rawLast || "").replace(/^>{2,}\s*/, "").trim();
+    // Same cleaning as commitLine, so the warm key matches the commit key.
+    const src = cleanAutoCaption((rawLast || "").replace(/^>{2,}\s*/, "").trim());
     if (!src || isNoise(src) || !isTranslatableEnglish(src)) return;
     state.warmNextSrc = src;
     if (state.warmTimer) return;
@@ -1016,7 +1059,7 @@
   function commitLine(rawSrc) {
     // Strip broadcast-style speaker markers (">>", ">>>"); they confuse the
     // translation models and carry no meaning for the viewer.
-    const src = (rawSrc || "").replace(/^>{2,}\s*/, "").trim();
+    const src = cleanAutoCaption((rawSrc || "").replace(/^>{2,}\s*/, "").trim());
     if (!src || isNoise(src) || !isTranslatableEnglish(src)) return;
     if (state.recentCommitted.includes(src)) return;
     state.recentCommitted.push(src);
@@ -1029,10 +1072,12 @@
     state.rollingLines.push(entry);
     if (state.rollingLines.length > 3) state.rollingLines.shift();
     log("commit", src);
+    noteNames(src);
     translateLine(src, (translated) => {
       entry.out = translated || entry.out || src;
       renderRolling();
     });
+    state.prevSrc = src; // after dispatch: the request reads the line before this one
   }
 
   // The box is bottom-anchored, so a new line growing in at the bottom
@@ -1177,6 +1222,7 @@
     {
       if (!isTranslatableEnglish(text)) return;
       log("subtitle", text);
+      noteNames(text);
       const requestId = ++state.activeRequestId;
       // Keep the previous translation visible while the next one is pending
       // on rolling-caption sites; only show the pending marker from cold.
@@ -1242,6 +1288,7 @@
             log("translationError", String(error));
           });
       }
+      state.prevSrc = text; // after dispatch: the request reads the line before this one
       const subtitleNode = findSmallestMatchingDescendant(state.subtitleRoot, text) || findSubtitleNode(state.subtitleRoot, text);
       if (subtitleNode) {
         const signature = nodePath(subtitleNode);
@@ -1340,6 +1387,7 @@
     // On seeks/skips the lingering subtitle no longer matches the scene.
     video.addEventListener("seeked", () => {
       clearTimeout(state.clearTimer);
+      state.prevSrc = ""; // a seek breaks dialogue continuity
       if (siteAdapter && siteAdapter.rolling) {
         state.rollingLines = [];
         state.rollingPending = "";
