@@ -89,7 +89,7 @@
       <button data-gemma-model="gemma4:e4b" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">e4b (big)</button>
     </div>
     <div style="margin-bottom: 10px; font-size: 13px;">Language (Gemma only; Libre is Telugu):</div>
-    <select id="prime-subtitle-language" style="width: 100%; margin-bottom: 12px; padding: 6px; border-radius: 8px; border: 0; font: inherit; font-size: 12px;">
+    <select id="prime-subtitle-language" style="width: 100%; margin-bottom: 12px; padding: 6px; border-radius: 8px; border: 0; font: inherit; font-size: 12px; color: #111; background: #fff;">
       <option>Telugu</option>
       <option>Hindi</option>
       <option>Tamil</option>
@@ -424,7 +424,7 @@
     for (const el of roots) {
       const text = (el.innerText || "").trim();
       const score =
-        (/caption/i.test(el.className || "") ? 10 : 0) +
+        (/caption|shaka-text/i.test(el.className || "") ? 10 : 0) +
         (text.length > 0 ? 5 : 0) +
         (el.querySelectorAll("*").length > 0 ? 2 : 0) +
         (el.getBoundingClientRect().top > window.innerHeight * 0.4 ? 2 : 0);
@@ -439,7 +439,7 @@
       state.subtitleRoot &&
       document.contains(state.subtitleRoot) &&
       best !== state.subtitleRoot &&
-      !/caption/i.test(best && best.className || "")
+      !/caption|shaka-text/i.test(best && best.className || "")
     ) {
       return state.subtitleRoot;
     }
