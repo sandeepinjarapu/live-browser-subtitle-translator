@@ -677,13 +677,12 @@
           log("node", signature);
           log("nodeText", (subtitleNode.innerText || "").trim());
         }
-        // Shaka recreates spans per cue, so hide the persistent container;
-        // hiding single spans lets the next cue's fresh spans show through.
-        const shakaContainer = subtitleNode.closest(".shaka-text-container");
-        if (shakaContainer) {
-          hideNode(shakaContainer);
-        } else if (subtitleNode.tagName === "SPAN" && /caption/i.test(subtitleNode.className || "")) {
-          hideNode(subtitleNode);
+        // Hide the caption container, not the matched leaf: players recreate
+        // text spans per cue (fresh spans show through), and the matched node
+        // often carries only a hashed class (Prime), so leaf-level rules miss.
+        const captionContainer = subtitleNode.closest('.shaka-text-container, [class*="caption" i]');
+        if (captionContainer) {
+          hideNode(captionContainer);
         }
       }
     }
