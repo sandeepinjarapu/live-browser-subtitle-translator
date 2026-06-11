@@ -20,6 +20,9 @@
     translationCache: new Map(),
     activeRequestId: 0,
     spec: null,
+    rollingLines: [],
+    rollingPending: "",
+    recentCommitted: [],
     subtitleSize: Number(localStorage.getItem("prime-subtitle-size")) || 36,
     translatorBackend: localStorage.getItem("prime-subtitle-backend") || "libre",
     gemmaModel: localStorage.getItem("prime-subtitle-gemma-model") || "gemma4:e2b-it-qat",
@@ -535,6 +538,9 @@
       // Auto-captions roll word-by-word; translate only once a line has
       // stopped changing for this long, or every word restarts the request.
       stabilizeMs: 250,
+      // Mirror YouTube's own caption model: lines scroll up as they complete;
+      // translate whole committed lines and let the previous one linger.
+      rolling: true,
     },
     {
       hosts: ["primevideo.com", "amazon.com", "amazon.in"],
@@ -775,8 +781,109 @@
     read();
   }
 
+  // ---- Rolling-caption mode (YouTube-style) ----
+  // YouTube shows a 2-line window: words append to the bottom line, and when
+  // it fills, lines scroll up. A line that is no longer the last one is
+  // final ("committed") — translate exactly those, never half-built lines.
+  // The overlay mirrors the model: last two translated lines stacked, so the
+  // previous line lingers for readability while the next is being translated.
+  const ROLLING_HOLD_MS = 700; // commit the last line after this pause
+
+  function readRolling(text) {
+    if (!text) {
+      if (state.rollingPending || state.rollingLines.length) {
+        state.rollingPending = "";
+        clearTimeout(state.stabilizeTimer);
+        const lingerMs = Math.min(5000, Math.max(2000, (box.textContent || "").length * 90));
+        clearTimeout(state.clearTimer);
+        state.clearTimer = setTimeout(() => {
+          state.rollingLines = [];
+          show("");
+        }, lingerMs);
+      }
+      return;
+    }
+    clearTimeout(state.clearTimer);
+    if (document.hidden) {
+      show("");
+      return;
+    }
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+    // Every line above the last has scrolled up: it is final.
+    for (const line of lines.slice(0, -1)) commitLine(line);
+    // The last line is still growing; commit it only after a real pause
+    // (end of a sentence or the speaker stopping), else wait for the scroll.
+    const last = lines[lines.length - 1];
+    if (last !== state.rollingPending) {
+      state.rollingPending = last;
+      clearTimeout(state.stabilizeTimer);
+      state.stabilizeTimer = setTimeout(() => commitLine(last), ROLLING_HOLD_MS);
+    }
+  }
+
+  function commitLine(src) {
+    if (!src || isNoise(src)) return;
+    if (state.recentCommitted.includes(src)) return;
+    state.recentCommitted.push(src);
+    if (state.recentCommitted.length > 8) state.recentCommitted.shift();
+    if (src === state.rollingPending) {
+      state.rollingPending = "";
+      clearTimeout(state.stabilizeTimer);
+    }
+    const entry = { src, out: null };
+    state.rollingLines.push(entry);
+    if (state.rollingLines.length > 3) state.rollingLines.shift();
+    log("commit", src);
+    translateLine(src, (translated) => {
+      entry.out = translated || src;
+      renderRolling();
+    });
+  }
+
+  function renderRolling() {
+    const outs = state.rollingLines.slice(-2).map((e) => e.out).filter(Boolean);
+    if (outs.length) show(outs.join("\n"));
+  }
+
+  // Committed lines accumulate instead of replacing each other, so no
+  // schedulePaint gate and no per-token streaming — whole lines only.
+  function translateLine(src, onResult) {
+    if (state.translatorBackend === "hybrid") {
+      let gemmaDone = false;
+      translateWithLibre(src)
+        .then((translated) => {
+          if (!gemmaDone) onResult(translated);
+        })
+        .catch(() => {});
+      translateWithGemma(src)
+        .then((translated) => {
+          gemmaDone = true;
+          if (translated) onResult(translated);
+        })
+        .catch((error) => log("translationError", String(error)));
+    } else if (state.translatorBackend === "gemma") {
+      translateWithGemma(src)
+        .then(onResult)
+        .catch((error) => {
+          onResult("");
+          log("translationError", String(error));
+        });
+    } else {
+      translateWithLibre(src)
+        .then(onResult)
+        .catch((error) => {
+          onResult("");
+          log("translationError", String(error));
+        });
+    }
+  }
+
   function read() {
     const text = extractText(state.subtitleRoot);
+    if (siteAdapter && siteAdapter.rolling) {
+      readRolling(text);
+      return;
+    }
     if (!text) {
       if (state.lastText) {
         state.lastText = "";
@@ -994,6 +1101,12 @@
     // On seeks/skips the lingering subtitle no longer matches the scene.
     video.addEventListener("seeked", () => {
       clearTimeout(state.clearTimer);
+      if (siteAdapter && siteAdapter.rolling) {
+        state.rollingLines = [];
+        state.rollingPending = "";
+        show("");
+        return;
+      }
       if (!state.lastText) show("");
     });
   }
