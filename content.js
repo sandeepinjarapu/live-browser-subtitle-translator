@@ -15,6 +15,8 @@
     subtitleSize: Number(localStorage.getItem("prime-subtitle-size")) || 36,
     translatorBackend: localStorage.getItem("prime-subtitle-backend") || "libre",
     gemmaModel: localStorage.getItem("prime-subtitle-gemma-model") || "gemma4:e2b-it-qat",
+    targetLanguage: "Telugu",
+    video: null,
     settingsOpen: false,
   };
 
@@ -86,6 +88,20 @@
       <button data-gemma-model="gemma4:e2b-it-qat" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">e2b (fast)</button>
       <button data-gemma-model="gemma4:e4b" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">e4b (big)</button>
     </div>
+    <div style="margin-bottom: 10px; font-size: 13px;">Language (Gemma only; Libre is Telugu):</div>
+    <select id="prime-subtitle-language" style="width: 100%; margin-bottom: 12px; padding: 6px; border-radius: 8px; border: 0; font: inherit; font-size: 12px;">
+      <option>Telugu</option>
+      <option>Hindi</option>
+      <option>Tamil</option>
+      <option>Kannada</option>
+      <option>Malayalam</option>
+      <option>Bengali</option>
+      <option>Marathi</option>
+      <option>Spanish</option>
+      <option>French</option>
+      <option>German</option>
+      <option>Japanese</option>
+    </select>
     <div style="margin-bottom: 10px; font-size: 13px;">Subtitle size: <span id="prime-subtitle-size-value"></span>px</div>
     <input id="prime-subtitle-size-slider" type="range" min="20" max="60" step="1" style="width: 100%;">
     <div style="margin-top: 10px; font-size: 12px; opacity: 0.8;">Click the badge to close.</div>
@@ -138,7 +154,7 @@
   function applySubtitleSize(size) {
     const next = Math.min(60, Math.max(20, Number(size) || 36));
     state.subtitleSize = next;
-    localStorage.setItem("prime-subtitle-size", String(next));
+    saveSetting("subtitleSize", next);
     box.style.font = `600 ${next}px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
     const valueEl = settingsPanel.querySelector("#prime-subtitle-size-value");
     const sliderEl = settingsPanel.querySelector("#prime-subtitle-size-slider");
@@ -165,9 +181,50 @@
 
   function setGemmaModel(model) {
     state.gemmaModel = model;
-    localStorage.setItem("prime-subtitle-gemma-model", model);
+    saveSetting("gemmaModel", model);
     updateBackendButtons();
     scheduleRead();
+  }
+
+  function saveSetting(key, value) {
+    try {
+      chrome.storage.sync.set({ [key]: value });
+    } catch {
+      // chrome.storage unavailable (e.g. extension reloaded); fall back below
+    }
+    localStorage.setItem(`prime-subtitle-${key}`, String(value));
+  }
+
+  function loadSettings() {
+    try {
+      chrome.storage.sync.get(
+        ["translatorBackend", "gemmaModel", "targetLanguage", "subtitleSize"],
+        (saved) => {
+          if (!saved) return;
+          if (saved.translatorBackend) state.translatorBackend = saved.translatorBackend;
+          if (saved.gemmaModel) state.gemmaModel = saved.gemmaModel;
+          if (saved.targetLanguage) state.targetLanguage = saved.targetLanguage;
+          if (saved.subtitleSize) applySubtitleSize(saved.subtitleSize);
+          const languageSelect = settingsPanel.querySelector("#prime-subtitle-language");
+          if (languageSelect) languageSelect.value = state.targetLanguage;
+          updateBackendButtons();
+          pingTranslator();
+        }
+      );
+    } catch {
+      // chrome.storage unavailable; localStorage values already applied
+    }
+  }
+
+  function cleanTranslation(text) {
+    let cleaned = text.trim().replace(/^(here(?:'|’)s the translation:?|translation:?)\s*/i, "");
+    if (
+      (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+      (cleaned.startsWith("“") && cleaned.endsWith("”"))
+    ) {
+      cleaned = cleaned.slice(1, -1);
+    }
+    return cleaned.trim();
   }
 
   function toggleSettings(open) {
@@ -183,7 +240,7 @@
 
   function setTranslatorBackend(backend) {
     state.translatorBackend = ["gemma", "hybrid"].includes(backend) ? backend : "libre";
-    localStorage.setItem("prime-subtitle-backend", state.translatorBackend);
+    saveSetting("translatorBackend", state.translatorBackend);
     state.translationCache.clear();
     updateBackendButtons();
     pingTranslator();
@@ -223,7 +280,7 @@
     const normalized = text.replace(/\s+/g, " ").trim();
     if (!normalized) return "";
 
-    const cacheKey = `gemma:${state.gemmaModel}:${normalized}`;
+    const cacheKey = `gemma:${state.gemmaModel}:${state.targetLanguage}:${normalized}`;
     if (state.translationCache.has(cacheKey)) {
       return state.translationCache.get(cacheKey);
     }
@@ -237,8 +294,8 @@
         model: state.gemmaModel,
         think: false,
         prompt: [
-          "Translate the following English subtitle into natural Telugu.",
-          "Return only the Telugu translation.",
+          `Translate the following English subtitle into natural ${state.targetLanguage}.`,
+          `Return only the ${state.targetLanguage} translation.`,
           "",
           normalized,
         ].join("\n"),
@@ -277,7 +334,7 @@
       if (accumulated && onPartial) onPartial(accumulated.trim());
     }
 
-    const translated = accumulated.trim();
+    const translated = cleanTranslation(accumulated);
     if (translated) {
       state.translationCache.set(cacheKey, translated);
     }
@@ -612,6 +669,15 @@
     button.addEventListener("click", () => setGemmaModel(button.dataset.gemmaModel));
   });
 
+  const languageSelect = settingsPanel.querySelector("#prime-subtitle-language");
+  if (languageSelect) {
+    languageSelect.addEventListener("change", (event) => {
+      state.targetLanguage = event.target.value;
+      saveSetting("targetLanguage", state.targetLanguage);
+      scheduleRead();
+    });
+  }
+
   const slider = settingsPanel.querySelector("#prime-subtitle-size-slider");
   const sizeValue = settingsPanel.querySelector("#prime-subtitle-size-value");
   if (slider && sizeValue) {
@@ -627,7 +693,21 @@
   refresh();
   pingTranslator();
   setInterval(pingTranslator, 5000);
+  function watchVideoSeeks() {
+    const video = document.querySelector("video");
+    if (!video || video === state.video) return;
+    state.video = video;
+    // On seeks/skips the lingering subtitle no longer matches the scene.
+    video.addEventListener("seeked", () => {
+      clearTimeout(state.clearTimer);
+      if (!state.lastText) show("");
+    });
+  }
+
+  loadSettings();
+  watchVideoSeeks();
   setInterval(() => {
+    watchVideoSeeks();
     if (!state.subtitleRoot || !document.contains(state.subtitleRoot)) {
       refresh();
     }

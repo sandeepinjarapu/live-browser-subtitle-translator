@@ -4,6 +4,8 @@ cd "$(dirname "$0")"
 # Allow the extension's browser-origin requests to reach Ollama (Gemma backend).
 # launchctl setenv does not survive reboots, so set it on every start.
 launchctl setenv OLLAMA_ORIGINS "https://www.primevideo.com,https://*.primevideo.com,https://*.amazon.com,https://*.amazon.in"
+# Models live in the renamed-for-iCloud folder; Ollama defaults to ~/.ollama otherwise.
+launchctl setenv OLLAMA_MODELS "$PWD/.ollama-models.nosync"
 # Models live in a .nosync folder so iCloud does not upload/evict them.
 launchctl setenv OLLAMA_MODELS "$PWD/.ollama-models.nosync"
 if curl -s --max-time 2 -o /dev/null -H "Origin: https://www.primevideo.com" --fail http://127.0.0.1:11434/api/tags; then
