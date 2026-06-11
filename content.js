@@ -19,6 +19,7 @@
     overlayHost: null,
     translationCache: new Map(),
     activeRequestId: 0,
+    spec: null,
     subtitleSize: Number(localStorage.getItem("prime-subtitle-size")) || 36,
     translatorBackend: localStorage.getItem("prime-subtitle-backend") || "libre",
     gemmaModel: localStorage.getItem("prime-subtitle-gemma-model") || "gemma4:e2b-it-qat",
@@ -182,7 +183,7 @@
 
   // A shown translation stays up at least this long before a NEW line may
   // replace it; re-paints of the same line (streaming, hybrid swap) pass.
-  const MIN_DISPLAY_MS = 500;
+  const MIN_DISPLAY_MS = 250;
   function schedulePaint(requestId, render) {
     if (requestId !== state.activeRequestId) return;
     const elapsed = Date.now() - state.lastPaintAt;
@@ -409,10 +410,10 @@
       body: JSON.stringify({
         model: state.gemmaModel,
         think: false,
+        // Short prompt: prompt tokens are prefill time before the first
+        // streamed token; the "even if short" clause guards language drift.
         prompt: [
-          `Translate the following English subtitle into natural ${lang}.`,
-          `Respond in ${lang} only, even if the line is short or ambiguous.`,
-          `Return only the ${lang} translation, nothing else.`,
+          `Translate the English subtitle into natural ${lang}. Reply with only the ${lang} translation, even if the line is short or ambiguous.`,
           "",
           normalized,
         ].join("\n"),
@@ -800,11 +801,33 @@
       const stabilizeMs = siteAdapter && siteAdapter.stabilizeMs;
       if (stabilizeMs) {
         clearTimeout(state.stabilizeTimer);
+        maybeSpeculate(text);
         state.stabilizeTimer = setTimeout(() => startTranslation(text), stabilizeMs);
         return;
       }
       startTranslation(text);
     }
+  }
+
+  // Rolling captions + Gemma: send the line to Gemma immediately, in parallel
+  // with the stabilize window. Most lines settle unchanged (the sentence simply
+  // ended), so the adopted request has a stabilizeMs head start. A line that
+  // changes mid-flight is never painted; its result still warms the cache.
+  // At most one speculative request runs (OLLAMA_NUM_PARALLEL=2: one slot for
+  // this, one for the active request).
+  function maybeSpeculate(text) {
+    if (state.translatorBackend !== "gemma") return;
+    if (state.spec) return;
+    const spec = { text, paint: null };
+    spec.promise = translateWithGemma(text, (partial) => {
+      if (spec.paint) spec.paint(partial);
+    });
+    spec.promise
+      .catch(() => {})
+      .then(() => {
+        if (state.spec === spec) state.spec = null;
+      });
+    state.spec = spec;
   }
 
   function startTranslation(text) {
@@ -850,7 +873,18 @@
           lastPartialAt = now;
           schedulePaint(requestId, () => show(partial));
         };
-        translateWithGemma(text, onPartial)
+        // Adopt the speculative request if it was for this exact line;
+        // freeing state.spec lets the next line speculate right away.
+        let pending;
+        if (state.spec && state.spec.text === text) {
+          const spec = state.spec;
+          state.spec = null;
+          spec.paint = onPartial;
+          pending = spec.promise;
+        } else {
+          pending = translateWithGemma(text, onPartial);
+        }
+        pending
           .then(applyTranslation)
           .catch((error) => {
             applyTranslation("");
