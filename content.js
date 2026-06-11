@@ -177,6 +177,14 @@
       button.style.color = "#fff";
       button.style.boxShadow = active ? "0 0 0 1px rgba(255,255,255,0.08) inset" : "none";
     });
+    // Language only applies to the Gemma backend; Libre is Telugu-only and
+    // hybrid forces Telugu so its two stages agree.
+    const languageSelect = settingsPanel.querySelector("#prime-subtitle-language");
+    if (languageSelect) {
+      const gemmaOnly = state.translatorBackend === "gemma";
+      languageSelect.disabled = !gemmaOnly;
+      languageSelect.style.opacity = gemmaOnly ? "1" : "0.45";
+    }
   }
 
   function setGemmaModel(model) {
@@ -294,7 +302,9 @@
     const normalized = text.replace(/\s+/g, " ").trim();
     if (!normalized) return "";
 
-    const cacheKey = `gemma:${state.gemmaModel}:${state.targetLanguage}:${normalized}`;
+    // Hybrid pairs Gemma with Telugu-only Libre, so both stages must match.
+    const lang = state.translatorBackend === "hybrid" ? "Telugu" : state.targetLanguage;
+    const cacheKey = `gemma:${state.gemmaModel}:${lang}:${normalized}`;
     if (state.translationCache.has(cacheKey)) {
       return state.translationCache.get(cacheKey);
     }
@@ -308,9 +318,9 @@
         model: state.gemmaModel,
         think: false,
         prompt: [
-          `Translate the following English subtitle into natural ${state.targetLanguage}.`,
-          `Respond in ${state.targetLanguage} only, even if the line is short or ambiguous.`,
-          `Return only the ${state.targetLanguage} translation, nothing else.`,
+          `Translate the following English subtitle into natural ${lang}.`,
+          `Respond in ${lang} only, even if the line is short or ambiguous.`,
+          `Return only the ${lang} translation, nothing else.`,
           "",
           normalized,
         ].join("\n"),
@@ -667,10 +677,12 @@
           log("node", signature);
           log("nodeText", (subtitleNode.innerText || "").trim());
         }
-        if (
-          (subtitleNode.tagName === "SPAN" && /caption/i.test(subtitleNode.className || "")) ||
-          subtitleNode.closest(".shaka-text-container")
-        ) {
+        // Shaka recreates spans per cue, so hide the persistent container;
+        // hiding single spans lets the next cue's fresh spans show through.
+        const shakaContainer = subtitleNode.closest(".shaka-text-container");
+        if (shakaContainer) {
+          hideNode(shakaContainer);
+        } else if (subtitleNode.tagName === "SPAN" && /caption/i.test(subtitleNode.className || "")) {
           hideNode(subtitleNode);
         }
       }
