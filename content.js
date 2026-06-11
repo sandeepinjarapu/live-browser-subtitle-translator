@@ -20,8 +20,19 @@
     translationCache: new Map(),
     activeRequestId: 0,
     spec: null,
+    rollingLines: [],
+    rollingPending: "",
+    recentCommitted: [],
+    lastCaptionTextAt: Date.now(),
+    captionHint: "",
+    rollingEmptySince: 0,
+    warm: new Map(),
+    warmNextSrc: "",
+    warmTimer: null,
     subtitleSize: Number(localStorage.getItem("prime-subtitle-size")) || 36,
     translatorBackend: localStorage.getItem("prime-subtitle-backend") || "libre",
+    enabled: localStorage.getItem("prime-subtitle-enabled") !== "false",
+    showOriginal: localStorage.getItem("prime-subtitle-showOriginal") === "true",
     gemmaModel: localStorage.getItem("prime-subtitle-gemma-model") || "gemma4:e2b-it-qat",
     targetLanguage: "Telugu",
     video: null,
@@ -112,6 +123,10 @@
     </select>
     <div style="margin-bottom: 10px; font-size: 13px;">Subtitle size: <span id="prime-subtitle-size-value"></span>px</div>
     <input id="prime-subtitle-size-slider" type="range" min="20" max="60" step="1" style="width: 100%;">
+    <div style="display: flex; gap: 8px; margin-top: 12px;">
+      <button id="prime-subtitle-enabled-toggle" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">Translator: on</button>
+      <button id="prime-subtitle-show-original" style="flex: 1; padding: 7px 10px; border: 0; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;">Original: hidden</button>
+    </div>
     <div style="margin-top: 10px; font-size: 12px; opacity: 0.8;">Click the badge to close.</div>
   `;
 
@@ -160,6 +175,18 @@
     "}",
   ].join("\n");
   document.documentElement.appendChild(hideCss);
+
+  // "Show original" keeps the source captions visible alongside the overlay
+  // (dual-subtitle mode); turning the translator off restores them too.
+  function applyHideState() {
+    hideCss.disabled = !(state.enabled && !state.showOriginal);
+    if (hideCss.disabled && state.hiddenNode) {
+      state.hiddenNode.style.opacity = "";
+      state.hiddenNode.style.textShadow = "";
+      state.hiddenNode = null;
+    }
+  }
+  applyHideState();
 
   function log(...args) {
     console.log("[Prime Subtitle Light]", ...args);
@@ -244,6 +271,47 @@
       languageSelect.disabled = !gemmaOnly;
       languageSelect.style.opacity = gemmaOnly ? "1" : "0.45";
     }
+    const enabledBtn = settingsPanel.querySelector("#prime-subtitle-enabled-toggle");
+    if (enabledBtn) {
+      enabledBtn.textContent = state.enabled ? "Translator: on" : "Translator: off";
+      enabledBtn.style.background = state.enabled ? "rgba(24, 119, 242, 0.95)" : "rgba(255,255,255,0.16)";
+      enabledBtn.style.color = "#fff";
+    }
+    const originalBtn = settingsPanel.querySelector("#prime-subtitle-show-original");
+    if (originalBtn) {
+      originalBtn.textContent = state.showOriginal ? "Original: shown" : "Original: hidden";
+      originalBtn.style.background = state.showOriginal ? "rgba(24, 119, 242, 0.95)" : "rgba(255,255,255,0.16)";
+      originalBtn.style.color = "#fff";
+    }
+  }
+
+  function setEnabled(on) {
+    state.enabled = !!on;
+    saveSetting("enabled", state.enabled);
+    applyHideState();
+    updateBackendButtons();
+    if (!state.enabled) {
+      clearTimeout(state.stabilizeTimer);
+      clearTimeout(state.clearTimer);
+      clearWarm();
+      state.rollingLines = [];
+      state.rollingPending = "";
+      state.lastText = "";
+      state.lastTranslatedText = "";
+      show("");
+      statusBadge.textContent = "Translator: off";
+      statusBadge.style.background = "rgba(0,0,0,0.72)";
+      return;
+    }
+    pingTranslator();
+    scheduleRead();
+  }
+
+  function setShowOriginal(on) {
+    state.showOriginal = !!on;
+    saveSetting("showOriginal", state.showOriginal);
+    applyHideState();
+    updateBackendButtons();
   }
 
   function setGemmaModel(model) {
@@ -265,13 +333,20 @@
   function loadSettings() {
     try {
       chrome.storage.sync.get(
-        ["translatorBackend", "gemmaModel", "targetLanguage", "subtitleSize"],
+        ["translatorBackend", "gemmaModel", "targetLanguage", "subtitleSize", "enabled", "showOriginal"],
         (saved) => {
           if (!saved) return;
           if (saved.translatorBackend) state.translatorBackend = saved.translatorBackend;
           if (saved.gemmaModel) state.gemmaModel = saved.gemmaModel;
           if (saved.targetLanguage) state.targetLanguage = saved.targetLanguage;
           if (saved.subtitleSize) applySubtitleSize(saved.subtitleSize);
+          if (typeof saved.enabled === "boolean") state.enabled = saved.enabled;
+          if (typeof saved.showOriginal === "boolean") state.showOriginal = saved.showOriginal;
+          applyHideState();
+          if (!state.enabled) {
+            statusBadge.textContent = "Translator: off";
+            statusBadge.style.background = "rgba(0,0,0,0.72)";
+          }
           const languageSelect = settingsPanel.querySelector("#prime-subtitle-language");
           if (languageSelect) languageSelect.value = state.targetLanguage;
           updateBackendButtons();
@@ -305,6 +380,12 @@
       }
       if (changes.subtitleSize && Number(changes.subtitleSize.newValue) !== state.subtitleSize) {
         applySubtitleSize(changes.subtitleSize.newValue);
+      }
+      if (changes.enabled && changes.enabled.newValue !== state.enabled) {
+        setEnabled(changes.enabled.newValue);
+      }
+      if (changes.showOriginal && changes.showOriginal.newValue !== state.showOriginal) {
+        setShowOriginal(changes.showOriginal.newValue);
       }
       if (translationAffected) {
         updateBackendButtons();
@@ -492,7 +573,53 @@
     return state.translatorBackend === "gemma" ? translateWithGemma(text) : translateWithLibre(text);
   }
 
+  // Advisory only — never gates settings. The adapter signal (CC button
+  // state) is exact; the generic fallback is patient (20s of playback with
+  // no caption text) because silent stretches are normal.
+  // OTT pages keep several <video> elements around (previews, idle players);
+  // querySelector("video") can land on a paused dummy. Prefer the one playing.
+  function activeVideo() {
+    const vids = [...document.querySelectorAll("video")];
+    return vids.find((v) => !v.paused && !v.ended && v.currentTime > 0) || vids[0] || null;
+  }
+
+  function updateCaptionHint() {
+    const prevHint = state.captionHint;
+    state.captionHint = "";
+    if (!state.enabled) return;
+    const video = activeVideo();
+    const playing = video && !video.paused && !video.ended && video.currentTime > 0;
+    if (!playing) {
+      state.lastCaptionTextAt = Date.now();
+      return;
+    }
+    if (siteAdapter && siteAdapter.captionsDisabled && siteAdapter.captionsDisabled()) {
+      state.captionHint = "turn on subtitles in the player";
+      // Captions are explicitly off — no linger, exit now.
+      if (state.rollingLines.length || box.textContent) {
+        clearTimeout(state.clearTimer);
+        state.rollingLines = [];
+        state.rollingPending = "";
+        clearWarm();
+        show("");
+      }
+    } else if (Date.now() - state.lastCaptionTextAt > 20000) {
+      state.captionHint = "no subtitles found — is CC on?";
+    }
+    if (state.captionHint) {
+      statusBadge.textContent = `Translator: ${state.captionHint}`;
+      statusBadge.style.background = "rgba(140, 100, 20, 0.85)";
+    }
+    if (state.captionHint !== prevHint) log("captionHint", state.captionHint || "(cleared)");
+  }
+
   async function pingTranslator() {
+    if (!state.enabled) {
+      statusBadge.textContent = "Translator: off";
+      statusBadge.style.background = "rgba(0,0,0,0.72)";
+      return;
+    }
+    if (state.captionHint) return; // the hint owns the badge while active
     const check = async (url) => {
       const res = await bgFetch(url, { cache: "no-store" });
       if (!res.ok) throw new Error(String(res.status));
@@ -529,9 +656,17 @@
     {
       hosts: ["youtube.com"],
       roots: [".ytp-caption-window-container"],
+      // Precise "subtitles are off" signal: YT's CC button exposes its state.
+      captionsDisabled: () => {
+        const btn = document.querySelector(".ytp-subtitles-button");
+        return !!btn && btn.offsetParent !== null && btn.getAttribute("aria-pressed") !== "true";
+      },
       // Auto-captions roll word-by-word; translate only once a line has
       // stopped changing for this long, or every word restarts the request.
       stabilizeMs: 250,
+      // Mirror YouTube's own caption model: lines scroll up as they complete;
+      // translate whole committed lines and let the previous one linger.
+      rolling: true,
     },
     {
       hosts: ["primevideo.com", "amazon.com", "amazon.in"],
@@ -645,6 +780,16 @@
 
   function isNoise(text) {
     return !text || text.length < 2 || noisePatterns().some((re) => re.test(text));
+  }
+
+  // Guard against non-English input (e.g. the user left YouTube's own
+  // auto-translate on): en->Telugu models turn it into gibberish. A real
+  // English line is overwhelmingly Latin letters.
+  function isTranslatableEnglish(text) {
+    const letters = (text.match(/[\p{L}]/gu) || []).length;
+    if (!letters) return false;
+    const latin = (text.match(/[A-Za-z]/g) || []).length;
+    return latin / letters > 0.5;
   }
 
   function narrowText(text) {
@@ -772,8 +917,206 @@
     read();
   }
 
+  // ---- Rolling-caption mode (YouTube-style) ----
+  // YouTube shows a 2-line window: words append to the bottom line, and when
+  // it fills, lines scroll up. A line that is no longer the last one is
+  // final ("committed") — translate exactly those, never half-built lines.
+  // The overlay mirrors the model: last two translated lines stacked, so the
+  // previous line lingers for readability while the next is being translated.
+  const ROLLING_HOLD_MS = 450; // commit the last line after this pause
+
+  function readRolling(text) {
+    if (!text) {
+      // One-shot on the transition to empty: re-entering this branch while
+      // the linger is pending must NOT re-arm the timer (the 1.5s refresh
+      // interval would otherwise reset it forever).
+      if (!state.rollingEmptySince && (state.rollingPending || state.rollingLines.length)) {
+        state.rollingEmptySince = Date.now();
+        state.rollingPending = "";
+        clearWarm();
+        clearTimeout(state.stabilizeTimer);
+        const lingerMs = Math.min(5000, Math.max(2000, (box.textContent || "").length * 90));
+        clearTimeout(state.clearTimer);
+        state.clearTimer = setTimeout(() => {
+          state.rollingLines = [];
+          show("");
+        }, lingerMs);
+      }
+      return;
+    }
+    state.rollingEmptySince = 0;
+    clearTimeout(state.clearTimer);
+    if (document.hidden) {
+      show("");
+      return;
+    }
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+    // Every line above the last has scrolled up: it is final.
+    for (const line of lines.slice(0, -1)) commitLine(line);
+    // The last line is still growing; commit it only after a real pause
+    // (end of a sentence or the speaker stopping), else wait for the scroll.
+    const last = lines[lines.length - 1];
+    if (last !== state.rollingPending) {
+      // A ">>" speaker-change marker opening a new line means the previous
+      // speaker's line is definitively done — commit it without the hold.
+      if (/^>{2,}/.test(last) && state.rollingPending && !last.startsWith(state.rollingPending)) {
+        commitLine(state.rollingPending);
+      }
+      state.rollingPending = last;
+      clearTimeout(state.stabilizeTimer);
+      state.stabilizeTimer = setTimeout(() => commitLine(last), ROLLING_HOLD_MS);
+      scheduleWarm(last);
+    }
+  }
+
+  // Warm-ahead: on a fixed beat, speculatively translate the still-growing
+  // line with the selected backend, keyed by exact text. A pause-commit's
+  // text is by definition unchanged for ROLLING_HOLD_MS, so its warm request
+  // is already in flight (or done) when the commit lands — the inference
+  // time overlaps the wait instead of following it.
+  const WARM_EVERY_MS = 600;
+
+  function scheduleWarm(rawLast) {
+    const src = (rawLast || "").replace(/^>{2,}\s*/, "").trim();
+    if (!src || isNoise(src) || !isTranslatableEnglish(src)) return;
+    state.warmNextSrc = src;
+    if (state.warmTimer) return;
+    state.warmTimer = setTimeout(fireWarm, WARM_EVERY_MS);
+  }
+
+  function fireWarm() {
+    state.warmTimer = null;
+    const src = state.warmNextSrc;
+    // One speculative request at a time: a slow model (e4b ~3-4s/line) must
+    // not stack a queue of stale speculations ahead of real commits.
+    if (!src || state.warm.has(src) || state.warmInFlight) return;
+    state.warmInFlight = true;
+    const backend = state.translatorBackend === "libre" ? translateWithLibre : translateWithGemma;
+    const job = backend(src).catch(() => "");
+    job.then(() => {
+      state.warmInFlight = false;
+    });
+    state.warm.set(src, job);
+    if (state.warm.size > 6) state.warm.delete(state.warm.keys().next().value);
+  }
+
+  function pickWarm(src) {
+    const p = state.warm.get(src);
+    if (p) state.warm.delete(src);
+    return p || null;
+  }
+
+  function clearWarm() {
+    state.warmNextSrc = "";
+    clearTimeout(state.warmTimer);
+    state.warmTimer = null;
+    state.warmInFlight = false;
+  }
+
+  function commitLine(rawSrc) {
+    // Strip broadcast-style speaker markers (">>", ">>>"); they confuse the
+    // translation models and carry no meaning for the viewer.
+    const src = (rawSrc || "").replace(/^>{2,}\s*/, "").trim();
+    if (!src || isNoise(src) || !isTranslatableEnglish(src)) return;
+    if (state.recentCommitted.includes(src)) return;
+    state.recentCommitted.push(src);
+    if (state.recentCommitted.length > 8) state.recentCommitted.shift();
+    if (rawSrc === state.rollingPending) {
+      state.rollingPending = "";
+      clearTimeout(state.stabilizeTimer);
+    }
+    const entry = { src, out: null };
+    state.rollingLines.push(entry);
+    if (state.rollingLines.length > 3) state.rollingLines.shift();
+    log("commit", src);
+    translateLine(src, (translated) => {
+      entry.out = translated || entry.out || src;
+      renderRolling();
+    });
+  }
+
+  // The box is bottom-anchored, so a new line growing in at the bottom
+  // pushes the previous line up — same motion as YouTube's caption window.
+  const ROLL_MS = 300;
+
+  function renderRolling() {
+    const entries = state.rollingLines.filter((e) => e.out);
+    if (!entries.length) return;
+    positionOverlay();
+    box.style.display = "block";
+    entries.forEach((entry, i) => {
+      if (entry.el) {
+        // Hybrid swap: update text in place, no motion.
+        if (entry.el.textContent !== entry.out) {
+          entry.el.textContent = entry.out;
+          entry.el.style.maxHeight = `${entry.el.scrollHeight}px`;
+        }
+        return;
+      }
+      const el = document.createElement("div");
+      entry.el = el;
+      el.textContent = entry.out;
+      el.style.cssText = [
+        "overflow: hidden",
+        "max-height: 0",
+        "opacity: 0",
+        `transition: max-height ${ROLL_MS}ms ease, opacity ${ROLL_MS}ms ease`,
+      ].join(";");
+      // Translations can resolve out of order; keep the spoken order.
+      const next = entries.slice(i + 1).find((e) => e.el);
+      box.insertBefore(el, next ? next.el : null);
+      requestAnimationFrame(() => {
+        el.style.maxHeight = `${el.scrollHeight}px`;
+        el.style.opacity = "1";
+      });
+    });
+    // Roll the oldest line out once more than two are showing.
+    const active = [...box.children].filter((el) => !el.dataset.rollingOut);
+    active.slice(0, -2).forEach((el) => {
+      el.dataset.rollingOut = "1";
+      el.style.maxHeight = "0px";
+      el.style.opacity = "0";
+      setTimeout(() => el.remove(), ROLL_MS + 50);
+    });
+  }
+
+  // Committed lines accumulate instead of replacing each other, so no
+  // schedulePaint gate and no per-token streaming — whole lines only.
+  function translateLine(src, onResult) {
+    const warm = pickWarm(src); // adopt the in-flight warm-ahead request if any
+    if (state.translatorBackend === "hybrid") {
+      let gemmaDone = false;
+      translateWithLibre(src)
+        .then((translated) => {
+          if (!gemmaDone) onResult(translated);
+        })
+        .catch(() => {});
+      (warm || translateWithGemma(src))
+        .then((translated) => {
+          gemmaDone = true;
+          if (translated) onResult(translated);
+        })
+        .catch((error) => log("translationError", String(error)));
+    } else {
+      const fresh = () =>
+        state.translatorBackend === "gemma" ? translateWithGemma(src) : translateWithLibre(src);
+      (warm || fresh())
+        .then(onResult)
+        .catch((error) => {
+          onResult("");
+          log("translationError", String(error));
+        });
+    }
+  }
+
   function read() {
+    if (!state.enabled) return;
     const text = extractText(state.subtitleRoot);
+    if (text) state.lastCaptionTextAt = Date.now();
+    if (siteAdapter && siteAdapter.rolling) {
+      readRolling(text);
+      return;
+    }
     if (!text) {
       if (state.lastText) {
         state.lastText = "";
@@ -832,6 +1175,7 @@
 
   function startTranslation(text) {
     {
+      if (!isTranslatableEnglish(text)) return;
       log("subtitle", text);
       const requestId = ++state.activeRequestId;
       // Keep the previous translation visible while the next one is pending
@@ -910,7 +1254,7 @@
         // text spans per cue (fresh spans show through), and the matched node
         // often carries only a hashed class (Prime), so leaf-level rules miss.
         const captionContainer = subtitleNode.closest('.shaka-text-container, [class*="caption" i]');
-        if (captionContainer) {
+        if (captionContainer && !state.showOriginal) {
           hideNode(captionContainer);
         }
       }
@@ -958,6 +1302,11 @@
     button.addEventListener("click", () => setGemmaModel(button.dataset.gemmaModel));
   });
 
+  const enabledToggle = settingsPanel.querySelector("#prime-subtitle-enabled-toggle");
+  if (enabledToggle) enabledToggle.addEventListener("click", () => setEnabled(!state.enabled));
+  const showOriginalToggle = settingsPanel.querySelector("#prime-subtitle-show-original");
+  if (showOriginalToggle) showOriginalToggle.addEventListener("click", () => setShowOriginal(!state.showOriginal));
+
   const languageSelect = settingsPanel.querySelector("#prime-subtitle-language");
   if (languageSelect) {
     languageSelect.addEventListener("change", (event) => {
@@ -991,6 +1340,13 @@
     // On seeks/skips the lingering subtitle no longer matches the scene.
     video.addEventListener("seeked", () => {
       clearTimeout(state.clearTimer);
+      if (siteAdapter && siteAdapter.rolling) {
+        state.rollingLines = [];
+        state.rollingPending = "";
+        clearWarm();
+        show("");
+        return;
+      }
       if (!state.lastText) show("");
     });
   }
@@ -1000,6 +1356,7 @@
   setInterval(() => {
     watchVideoSeeks();
     positionOverlay();
+    updateCaptionHint();
     // Always re-evaluate the root, not just when it left the DOM: the initial
     // pick can land on a lookalike (e.g. Hotstar's subtitle button icon) that
     // never gets removed, and the real caption container appears later.
