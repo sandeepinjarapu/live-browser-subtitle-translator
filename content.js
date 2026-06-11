@@ -509,7 +509,7 @@
       roots: [".ytp-caption-window-container"],
       // Auto-captions roll word-by-word; translate only once a line has
       // stopped changing for this long, or every word restarts the request.
-      stabilizeMs: 900,
+      stabilizeMs: 450,
     },
     {
       hosts: ["primevideo.com", "amazon.com", "amazon.in"],
