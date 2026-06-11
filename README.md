@@ -58,6 +58,10 @@ launchctl setenv OLLAMA_ORIGINS "https://www.primevideo.com,https://*.primevideo
 The heavy local folders (`.ollama-models.nosync`, `.hf-cache.nosync`, `.venv.nosync`) use a `.nosync` suffix so iCloud Drive skips them.
 - total local translation footprint: about `1.1 GB`
 
+## Compatibility probe
+
+To check whether another streaming site could be supported, play a video there **with subtitles on**, open DevTools → Console, paste the whole of [`probe.js`](probe.js), and keep watching for ~15 seconds. It prints a `PROBE VERDICT` saying whether subtitle text is readable (DOM or native text tracks), whether the original could be hidden, and whether the player is syncable. Share that block to decide support.
+
 ## Notes
 
 - Keep Prime Video subtitles enabled while testing.
