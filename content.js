@@ -387,18 +387,35 @@
       let buffer = "";
       let acc = "";
       let settled = false;
+      // Watchdog: a queued/hung request must not leave "…" on screen forever.
+      // Reset on every chunk, so slow-but-alive streams are fine.
+      let watchdog;
+      const armWatchdog = () => {
+        clearTimeout(watchdog);
+        watchdog = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          try { port.disconnect(); } catch { /* already gone */ }
+          reject(new Error("gemma timed out"));
+        }, 20000);
+      };
+      armWatchdog();
       port.onDisconnect.addListener(() => {
+        clearTimeout(watchdog);
         if (!settled) reject(new Error("stream port disconnected"));
       });
       port.onMessage.addListener((msg) => {
+        armWatchdog();
         if (msg.error) {
           settled = true;
+          clearTimeout(watchdog);
           port.disconnect();
           reject(new Error(`ollama: ${msg.error}`));
           return;
         }
         if (msg.done) {
           settled = true;
+          clearTimeout(watchdog);
           port.disconnect();
           resolve(acc);
           return;
