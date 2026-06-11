@@ -815,18 +815,26 @@
     // (end of a sentence or the speaker stopping), else wait for the scroll.
     const last = lines[lines.length - 1];
     if (last !== state.rollingPending) {
+      // A ">>" speaker-change marker opening a new line means the previous
+      // speaker's line is definitively done — commit it without the hold.
+      if (/^>{2,}/.test(last) && state.rollingPending && !last.startsWith(state.rollingPending)) {
+        commitLine(state.rollingPending);
+      }
       state.rollingPending = last;
       clearTimeout(state.stabilizeTimer);
       state.stabilizeTimer = setTimeout(() => commitLine(last), ROLLING_HOLD_MS);
     }
   }
 
-  function commitLine(src) {
+  function commitLine(rawSrc) {
+    // Strip broadcast-style speaker markers (">>", ">>>"); they confuse the
+    // translation models and carry no meaning for the viewer.
+    const src = (rawSrc || "").replace(/^>{2,}\s*/, "").trim();
     if (!src || isNoise(src)) return;
     if (state.recentCommitted.includes(src)) return;
     state.recentCommitted.push(src);
     if (state.recentCommitted.length > 8) state.recentCommitted.shift();
-    if (src === state.rollingPending) {
+    if (rawSrc === state.rollingPending) {
       state.rollingPending = "";
       clearTimeout(state.stabilizeTimer);
     }
