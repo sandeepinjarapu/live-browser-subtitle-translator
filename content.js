@@ -727,7 +727,11 @@
   let pumpActive = 0;
 
   function pumpPrefetch(t) {
-    if (document.hidden) return;
+    // Focused window only: two visible windows would otherwise run two
+    // pumps (4 requests vs OLLAMA_NUM_PARALLEL=2), flooding the queue and
+    // pegging the GPU on both episodes at once. Display keeps painting
+    // already-translated cues; the pump resumes on focus.
+    if (document.hidden || !document.hasFocus()) return;
     if (lexiconState === "pending") return; // one pre-pass call, then flow
     while (pumpActive < PUMP_CONCURRENCY) {
       const idx = nextUntranslated(t);
