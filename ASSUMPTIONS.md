@@ -31,6 +31,7 @@ The probe (content.js `probeChannels`, 0.5.32) reports the first three on every 
 | 10 | Translations cacheable 24h keyed by URL path + language + model | **Verified**. Assumes the track URL path is stable per episode within a day; native tracks use a synthetic per-page-path key (0.5.31) |
 | 11 | UI noise is enumerable by regex | **Repeatedly violated**, by design ongoing: each player family contributes toasts/menus (track-selection toasts 0.5.27). Filters are generic + per-adapter; expect additions per new family |
 | 12 | "Captions off" is detectable | **Partial**. Exact signal on YouTube (CC button); elsewhere a 20s heuristic + cue-schedule consultation (0.5.13). Cannot distinguish CC-off from burned-in (#13) |
+| 14 | Visible captions imply a readable caption DOM element | **Violated** 2026-06-12, SUNNXT: hls.js leaves the native TextTrack in mode "showing" and the *browser* renders the cues — there is no caption element at all, so the root picker latched onto a dialog label ("Close (_C)"). Fixed 0.5.33: `video::cue { visibility: hidden }` hides browser-rendered cues, native harvest gates prefetch at ≥10 cues (trusted clock, nothing for the live path to read anyway), mnemonic-suffix UI labels added to generic noise |
 | 13 | Burned-in subtitles are out of scope | **Accepted limitation** (channel 4). OCR-or-nothing; affects Apple TV+ in places. Probe reports "no channel found" — onboarding must set this expectation honestly |
 
 ## Process
