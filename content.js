@@ -189,6 +189,11 @@
     ".atvwebplayersdk-caption {",
     "  opacity: 0 !important;",
     "}",
+    // Browser-rendered native cues (hls.js sites: track mode "showing", no
+    // caption DOM at all) — only the ::cue pseudo-element can hide those.
+    "video::cue {",
+    "  visibility: hidden !important;",
+    "}",
   ].join("\n");
   document.documentElement.appendChild(hideCss);
 
@@ -395,6 +400,11 @@
       // Native cue times share the video element's clock — no calibration.
       nativeClock = true;
       rebuildCueList();
+      // Trusted clock + ground-truth cues: schedule off them right away.
+      // Progressive native tracks (hls.js) may never reach the 100-cue gate
+      // ahead of the buffer, and browser-rendered cues have no DOM for the
+      // live path to read anyway.
+      if (cues.size >= 10) enablePrefetch("native track");
       // Synthetic per-episode URL so persistence keying works unchanged.
       const url = `https://native-texttrack.local${location.pathname}`;
       if (!state.tracks.some((t) => t.url === url)) {
@@ -1672,6 +1682,8 @@
     /^[\d:.\s\/\-]+$/,
     // Track-selection toasts ("subtitle stream_0, selected", "audio stream 1")
     /^(subtitle|audio)?\s*stream[_\s]?\d+\b/i,
+    // UI labels carrying a keyboard mnemonic ("Close(_C)") — dialogs, menus
+    /^.{1,30}\(_[A-Za-z]\)$/,
   ];
 
   function noisePatterns() {
