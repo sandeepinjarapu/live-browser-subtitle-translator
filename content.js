@@ -253,6 +253,8 @@
     state.tracks.push({ url, contentType, kind, size: body.length, at: Date.now() });
     const added = parseTtmlCues(body);
     rebuildCueList();
+    if (!trackKey) trackKey = trackStorageKey(url);
+    if (added) loadSavedTranslations();
     const times = [...cues.values()].map((c) => c.begin);
     log(
       `track captured (#${state.tracks.length}, ${kind}, ${body.length} chars):`,
@@ -267,6 +269,59 @@
       window.postMessage({ source: "lst-fetch-track", url }, "*");
     }
   });
+
+  // Persist per-track translations so a reload or same-day rewatch skips the
+  // model entirely. Keyed by URL path (the query carries expiring signature
+  // params) + language + model; restored cues match on begin-time + source
+  // text. Day-old tracks are pruned — beyond that, a re-run is cheap.
+  let trackKey = "";
+  let saveTimer = null;
+
+  function trackStorageKey(url) {
+    try {
+      const u = new URL(url);
+      return `lst-track:${u.origin}${u.pathname}:${state.targetLanguage}:${state.gemmaModel}`;
+    } catch {
+      return "";
+    }
+  }
+
+  function loadSavedTranslations() {
+    if (!trackKey || !chrome.storage) return;
+    chrome.storage.local.get(trackKey, (items) => {
+      const saved = items && items[trackKey];
+      if (!saved || !Array.isArray(saved.entries)) return;
+      let applied = 0;
+      for (const [begin, text, out] of saved.entries) {
+        const cue = cues.get(`${begin}|${text}`);
+        if (cue && !cue.out) {
+          cue.out = out;
+          applied++;
+        }
+      }
+      if (applied) log(`restored ${applied} saved translations`);
+    });
+  }
+
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (!trackKey || !chrome.storage) return;
+      const entries = cueList.filter((c) => c.out).map((c) => [c.begin, c.text, c.out]);
+      chrome.storage.local.set({ [trackKey]: { savedAt: Date.now(), entries } });
+    }, 3000);
+  }
+
+  if (chrome.storage) {
+    chrome.storage.local.get(null, (items) => {
+      const stale = Object.keys(items).filter(
+        (k) =>
+          k.startsWith("lst-track:") &&
+          Date.now() - ((items[k] && items[k].savedAt) || 0) > 24 * 3600 * 1000
+      );
+      if (stale.length) chrome.storage.local.remove(stale);
+    });
+  }
 
   // ---- Prefetch playback: paint cues on the video clock, translate ahead ----
   // With the full track in hand, display needs no DOM timing at all: an
@@ -318,23 +373,28 @@
     pumpPrefetch(video.currentTime);
   }, 200);
 
-  function pumpPrefetch(t) {
-    if (pumpBusy || document.hidden) return;
-    let next = null;
-    let idx = -1;
+  // First untranslated cue from the playhead forward; if everything ahead is
+  // done, wrap around to the stretch behind it so the whole episode finishes.
+  function nextUntranslated(fromTime) {
+    let wrapIdx = -1;
     for (let i = 0; i < cueList.length; i++) {
       const c = cueList[i];
-      if (cueEnd(c) < t - 1) continue;
       if (c.out || (c.tried || 0) >= 2) continue;
       if (!isTranslatableEnglish(c.text)) {
         c.out = c.text;
         continue;
       }
-      next = c;
-      idx = i;
-      break;
+      if (cueEnd(c) >= fromTime - 1) return i;
+      if (wrapIdx === -1) wrapIdx = i;
     }
-    if (!next) return;
+    return wrapIdx;
+  }
+
+  function pumpPrefetch(t) {
+    if (pumpBusy || document.hidden) return;
+    const idx = nextUntranslated(t);
+    if (idx === -1) return;
+    const next = cueList[idx];
     pumpBusy = true;
     // The pump is sequential, so pointing the shared prompt context at this
     // cue's predecessors is safe (the live DOM path is off in prefetch mode).
@@ -345,6 +405,7 @@
         next.out = translated || next.text;
         pumpDone++;
         if (pumpDone % 25 === 0) log(`prefetch translated ${pumpDone} cues`);
+        scheduleSave();
       })
       .catch((error) => {
         next.tried = (next.tried || 0) + 1;
