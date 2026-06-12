@@ -215,11 +215,11 @@
       return;
     }
     if (event.data.source !== "lst-track") return;
-    const { url, contentType, body } = event.data;
-    if (state.tracks.some((t) => t.url === url)) return;
-    state.tracks.push({ url, contentType, body, at: Date.now() });
+    const { url, contentType, kind, body } = event.data;
+    if (state.tracks.some((t) => t.url === url && t.body.length === body.length)) return;
+    state.tracks.push({ url, contentType, kind, body, at: Date.now() });
     log(
-      `track captured (#${state.tracks.length}):`,
+      `track captured (#${state.tracks.length}, ${kind}):`,
       url,
       `[${contentType || "no content-type"}, ${body.length} chars]`
     );

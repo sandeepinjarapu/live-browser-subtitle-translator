@@ -6,15 +6,19 @@
   if (window.__subtitleTrackHook) return;
   window.__subtitleTrackHook = true;
 
-  // Prime serves tracks from bare-UUID URLs with generic content types, so
-  // URL/type can only *exclude* (obvious media); the body sniff decides.
+  // Prime serves tracks from bare-UUID URLs, and stpp subtitle segments
+  // arrive as binary fragmented MP4 with a video/mp4-ish content type — so
+  // the only reliable filter is searching decoded bodies for TTML markers.
+  // image/font/audio can't carry subtitles; everything else gets sniffed.
   var URL_RE = /ttml|dfxp|timedtext|imsc|\.vtt|\.srt|\.xml|caption|subtitle/i;
-  var SKIP_TYPE_RE = /^(video|audio|image|font)\//i;
-  var MAX_BODY = 4 * 1024 * 1024;
+  var SKIP_TYPE_RE = /^(audio|image|font)\//i;
+  var MAX_BODY = 8 * 1024 * 1024;
 
-  function looksLikeTrack(body) {
-    var head = body.slice(0, 2000);
-    return /^WEBVTT/.test(head) || /<tt[\s>:]/i.test(head) || /<timedtext/i.test(head);
+  // "vtt" / "ttml-text" (plain file) / "ttml-mp4" (XML inside mdat boxes)
+  function trackKind(body) {
+    if (/^WEBVTT/.test(body.slice(0, 200))) return "vtt";
+    if (body.indexOf("<tt") === -1 || body.indexOf("ttml") === -1) return "";
+    return body.indexOf("mdat") !== -1 || body.indexOf("moof") !== -1 ? "ttml-mp4" : "ttml-text";
   }
 
   // Diagnosis aid: surface every subtitle-ish URL even when the body sniff
@@ -28,9 +32,17 @@
   }
 
   function report(url, contentType, body) {
-    if (!body || body.length > MAX_BODY || !looksLikeTrack(body)) return;
+    if (!body || body.length > MAX_BODY) return;
+    var kind = trackKind(body);
+    if (!kind) return;
     window.postMessage(
-      { source: "lst-track", url: String(url), contentType: contentType || "", body: body },
+      {
+        source: "lst-track",
+        url: String(url),
+        contentType: contentType || "",
+        kind: kind,
+        body: body,
+      },
       "*"
     );
   }
