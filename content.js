@@ -491,6 +491,7 @@
     const video = activeVideo();
     if (!video || !video.currentTime) return;
     const normalized = text.replace(/\s+/g, " ").trim();
+    if (normalized.length < 12) return; // short lines repeat — unsafe anchors
     let best = null;
     for (const cue of cueList) {
       if (cue.text.replace(/\n/g, " ") !== normalized) continue;
