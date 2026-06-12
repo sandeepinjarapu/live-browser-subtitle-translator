@@ -222,6 +222,25 @@
     return NaN;
   }
 
+  // <br/> inside a cue separates speaker turns — flattening them into one
+  // line loses who-said-what. Preserved as "\n" through translation/render.
+  function cueText(p) {
+    let out = "";
+    const walk = (node) => {
+      for (const child of node.childNodes) {
+        if (child.nodeType === 3) out += child.nodeValue;
+        else if (child.nodeName.toLowerCase().endsWith("br")) out += "\n";
+        else walk(child);
+      }
+    };
+    walk(p);
+    return out
+      .split("\n")
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .join("\n");
+  }
+
   function parseTtmlCues(body) {
     // fMP4 bodies hold one or more <tt> documents inside mdat boxes; a
     // plain-text track is a single document. The regex handles both.
@@ -233,7 +252,7 @@
       const tickRate = Number(tt.getAttribute("ttp:tickRate")) || 0;
       for (const p of doc.getElementsByTagName("p")) {
         const begin = parseClock(p.getAttribute("begin"), tickRate);
-        const text = (p.textContent || "").replace(/\s+/g, " ").trim();
+        const text = cueText(p);
         if (!text || isNaN(begin)) continue;
         const key = `${begin}|${text}`;
         if (cues.has(key)) continue;
@@ -359,7 +378,7 @@
     const normalized = text.replace(/\s+/g, " ").trim();
     let best = null;
     for (const cue of cueList) {
-      if (cue.text !== normalized) continue;
+      if (cue.text.replace(/\n/g, " ") !== normalized) continue;
       if (!best || Math.abs(cue.begin - video.currentTime) < Math.abs(best.begin - video.currentTime)) {
         best = cue;
       }
@@ -486,7 +505,18 @@
     // cue's predecessors is safe (the live DOM path is off in prefetch mode).
     state.prevLines = cueList.slice(Math.max(0, idx - 2), idx).map((c) => c.text);
     const backend = state.translatorBackend === "libre" ? translateWithLibre : translateWithGemma;
-    backend(next.text)
+    // Translate speaker turns separately so the rendered split (and leading
+    // dashes) match the original cue.
+    const job = (async () => {
+      const outs = [];
+      for (const part of next.text.split("\n")) {
+        const src = part.replace(/^-\s*/, "");
+        const translated = (await backend(src)) || src;
+        outs.push(part === src ? translated : `- ${translated}`);
+      }
+      return outs.join("\n");
+    })();
+    job
       .then((translated) => {
         next.out = translated || next.text;
         pumpDone++;
