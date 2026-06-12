@@ -486,6 +486,7 @@
   // clocks; until the first sample lands, the live DOM path keeps driving.
   let syncOffset = 0;
   let syncSamples = [];
+  let everCalibrated = false; // distinguishes CC-off cold start from post-jump gaps
 
   function calibrateSync(text) {
     const video = activeVideo();
@@ -503,6 +504,7 @@
     const sample = best.begin - video.currentTime;
     if (Math.abs(sample) > 120) return; // repeated line far away — ambiguous
     syncSamples.push(sample);
+    everCalibrated = true;
     if (syncSamples.length > 5) syncSamples.shift();
     const sorted = [...syncSamples].sort((a, b) => a - b);
     const median = sorted[Math.floor(sorted.length / 2)];
@@ -572,6 +574,7 @@
     trackKey = "";
     syncOffset = 0;
     syncSamples = [];
+    everCalibrated = false;
     lastCueKey = "~init";
     lexicon = null;
     lexiconState = "idle";
@@ -1107,6 +1110,9 @@
   // something). Without prefetch, assume they were — the old heuristic.
   function captionsWereDue(video, silentMs) {
     if (!prefetchOn || !cueList.length) return true;
+    // Post-jump (ad break) the offset is untrusted: the schedule can't say
+    // anything until re-lock. A lock that never happened means CC is off.
+    if (!syncSamples.length) return !everCalibrated;
     const to = video.currentTime + syncOffset;
     const from = to - silentMs / 1000;
     let due = 0;
