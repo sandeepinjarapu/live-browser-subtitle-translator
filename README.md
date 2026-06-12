@@ -1,62 +1,51 @@
-# Prime Video Subtitle Probe
+# Live Subtitle Translator
 
-Minimal Chrome extension to verify that Prime Video subtitles are readable from the DOM.
+Chrome extension that translates streaming subtitles in real time using **local, private AI** (Ollama/Gemma or a LibreTranslate-style server). No cloud, no accounts, no subtitle data leaving your machine.
 
-## Load it in Chrome
+It reads the original subtitle through whichever channel the site offers — intercepted track files, native `video.textTracks`, or the rendered caption DOM — hides the original, and overlays the translation. On sites where the full track is capturable, the whole episode is translated ahead of playback (**prefetch**: zero perceived lag); elsewhere a live DOM path follows the captions with ~0.5–1 s lag.
 
-1. Open `chrome://extensions/`
-2. Turn on `Developer mode`
-3. Click `Load unpacked`
-4. Select this folder
+## Supported sites (field-tested)
 
-## What it does
+| Site | Tier |
+|---|---|
+| Prime Video | Prefetch |
+| Netflix | Prefetch |
+| JioHotstar | Prefetch |
+| YouTube | Prefetch |
+| MX Player | Live path |
+| Zee5 | Live path |
+| SonyLIV | Live path / prefetch (native track) |
+| SUNNXT | Live path |
 
-- Watches Prime Video pages for subtitle-like text near the bottom of the player
-- Logs the detected line to DevTools
-- Shows a small debug box in the lower-left corner of the page
+Any other site: click the toolbar button (**Try on this site**) — it requests permission for that origin, injects the pipeline, and the built-in channel probe logs what the site offers (`channel probe: native[…] dom[…] net[…] → verdict` in DevTools). See [ROADMAP.md](ROADMAP.md) for the full matrix and [ASSUMPTIONS.md](ASSUMPTIONS.md) for the assumptions ledger behind it.
 
-## Local Telugu translation
+## Install (unpacked)
 
-This project now uses a local translator on `http://127.0.0.1:5000` based on `Helsinki-NLP/opus-mt-en-dra`.
+1. Open `chrome://extensions/`, enable Developer mode
+2. Load unpacked → select this folder
+3. Set up a local translation backend (below)
+4. Open a supported site, play something with subtitles on — the badge in the top-right shows connection status; click it for settings (backend, model, language, style, size, show-original, on/off)
 
-### Run the local services
+## Local translation backends
 
-Both backends run as login services (LaunchAgents) — nothing to start manually, and they survive reboots. One-time install (re-run after editing `local_translate_server.py` or the plists):
+Both run as login services (LaunchAgents) — nothing to start manually. One-time install:
 
 ```bash
 ./start_local_server.command
 ```
 
-Runtime lives in `~/.subtitle-translator/` (venv, HF cache, Ollama models) — outside Documents because macOS blocks launchd agents from reading Documents, and outside iCloud sync. The [`launchd/`](launchd) folder holds the two agent definitions: the Libre server (kept alive), and an agent that sets `OLLAMA_ORIGINS`/`OLLAMA_MODELS` at login and restarts Ollama if its CORS config is stale. Logs land in `/tmp/subtitle-translator-*.log`.
+- **LibreTranslate-style server** on `127.0.0.1:5000` (`Helsinki-NLP/opus-mt-en-dra`, Telugu, fast)
+- **Ollama/Gemma** on `127.0.0.1:11434` — `ollama pull gemma4:e2b-it-qat` (4.3 GB, fast) and/or `gemma4:e4b` (9.6 GB, better). The `ollama-env` LaunchAgent sets `OLLAMA_ORIGINS` so the extension and OTT origins are allowed; without it Ollama answers 403 ("Gemma offline")
+- **Hybrid** shows the Libre result instantly and swaps in Gemma's when ready
 
-## Gemma backend (Ollama)
+Runtime lives in `~/.subtitle-translator/` (venv ~0.5 GB, HF cache ~0.6 GB, Ollama models ~13 GB) — outside Documents/iCloud because launchd agents can't read Documents. Agent definitions in [`launchd/`](launchd); logs in `/tmp/subtitle-translator-*.log`.
 
-The settings panel (click the status badge) can switch translation to a local Gemma model served by Ollama on `http://127.0.0.1:11434`, or to a hybrid mode that shows the LibreTranslate result instantly and swaps in Gemma's when ready.
+## How it works (short version)
 
-Requirements:
+- A MAIN-world hook sniffs fetch/XHR **bodies by format** (VTT, TTML, TTML-in-fMP4, YouTube timedtext) — no per-site URLs
+- Native `video.textTracks` cues are harvested directly when a site populates them
+- A cue clock schedules translated lines against `video.currentTime`, self-calibrating against the player's own captions where needed
+- A translate-ahead pump works through the episode in playback order; translations cache to disk for 24 h
+- The live DOM path (generic root scoring over player caption containers, with behavioral cue-text discovery as fallback) drives sites where no track is capturable, and is the fallback everywhere else
 
-1. Install the [Ollama](https://ollama.com) app and pull a model: `ollama pull gemma4:e2b-it-qat` (4.3 GB, fast) and/or `ollama pull gemma4:e4b` (9.6 GB, bigger).
-2. Ollama must allow requests from the extension and the streaming sites, or it answers 403 and the badge shows "Gemma offline". The `ollama-env` LaunchAgent handles this at every login (`chrome-extension://*` plus the supported OTT origins); no manual steps.
-
-### Current disk usage (in `~/.subtitle-translator/`)
-
-- `venv`: about `498 MB`
-- `hf-cache`: about `592 MB`
-- `ollama-models`: about `13 GB` (both Gemma models)
-
-## Compatibility probe
-
-To check whether another streaming site could be supported, play a video there **with subtitles on**, open DevTools → Console, paste the whole of [`probe.js`](probe.js), and keep watching for ~15 seconds. It prints a `PROBE VERDICT` saying whether subtitle text is readable (DOM or native text tracks), whether the original could be hidden, and whether the player is syncable. Share that block to decide support.
-
-## Notes
-
-- Keep Prime Video subtitles enabled while testing.
-- The extension reads the original subtitle line locally, hides the source line, and shows the translated overlay.
-- If the server is not running, the overlay will fall back to the original text.
-- A small status badge in the top-right corner shows whether the local translator is connected.
-- The Telugu subtitle overlay is larger now for TV viewing distance.
-
-## What success looks like
-
-- The DevTools console prints the actual subtitle line
-- The on-page debug box updates when the subtitle changes
+Status: personal project, not on the Web Store. Telugu-first (Gemma backend supports other languages).
