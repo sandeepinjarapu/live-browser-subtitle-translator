@@ -56,7 +56,7 @@ Each service needs three things audited: (a) can we *find* the subtitle text (DO
 | YouTube | **Prefetch** (verified 2026-06) | timedtext json3/XML; trusted cue clock (offset 0), ad gating, ASR cleanup. Rolling live path (yt-exploration) remains the fallback for CC-never-enabled videos |
 | MX Player | **Live path** (verified 2026-06) | video.js (`.vjs-text-track-display` — recognized 0.5.28; covers the whole video.js family). Segmented HLS VTT delivery → full prefetch stays off by design; first candidate for prefetch-lite. Track-selection toasts filtered (0.5.27); behavioral cue-text root discovery added as the generic fallback (0.5.29) |
 | Zee5 | **Live path** (verified 2026-06) | video.js — worked on first contact with zero new code; the 0.5.28 family entry covered it. Confirms the "one player entry unlocks a family" bet |
-| SonyLIV | Unknown, likely medium | Indian OTTs vary; Shaka and video.js families are now covered; JW Player (`.jw-captions`) is the next likely family |
+| SonyLIV | **Prefetch expected** (fixes 0.5.30–31, field verify pending) | video.js with de-prefixed caption classes (`.text-track-wrapper` — recognized 0.5.30); exposes the full episode as a hidden native TextTrack (364 cues observed) → first user of the native-textTracks prefetch source (0.5.31): cues harvested straight off `video.textTracks`, no interception, no calibration needed. JW Player (`.jw-captions`) is the next likely family |
 | Apple TV+ (web) | Hard | Heavy canvas/custom rendering in places; Safari-first audience |
 | aha, SUNNXT, Eros Now, Lionsgate Play | Unknown | Audit pass needed |
 
