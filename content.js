@@ -334,7 +334,38 @@
   let prefetchOn = false;
   let pumpBusy = false;
   let pumpDone = 0;
-  let lastCueKey = "";
+  let lastCueKey = "~init"; // not "" so the first tick always paints/clears
+
+  // Cue timestamps live on the track's media timeline, which can sit at a
+  // fixed offset from video.currentTime (DASH period anchoring). Calibrate
+  // by matching the player's own DOM caption text to a cue and comparing
+  // clocks; until the first sample lands, the live DOM path keeps driving.
+  let syncOffset = 0;
+  let syncSamples = [];
+
+  function calibrateSync(text) {
+    const video = activeVideo();
+    if (!video || !video.currentTime) return;
+    const normalized = text.replace(/\s+/g, " ").trim();
+    let best = null;
+    for (const cue of cueList) {
+      if (cue.text !== normalized) continue;
+      if (!best || Math.abs(cue.begin - video.currentTime) < Math.abs(best.begin - video.currentTime)) {
+        best = cue;
+      }
+    }
+    if (!best) return;
+    const sample = best.begin - video.currentTime;
+    if (Math.abs(sample) > 120) return; // repeated line far away — ambiguous
+    syncSamples.push(sample);
+    if (syncSamples.length > 5) syncSamples.shift();
+    const sorted = [...syncSamples].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    if (Math.abs(median - syncOffset) > 0.25) {
+      syncOffset = median;
+      log(`cue clock offset: ${syncOffset.toFixed(2)}s`);
+    }
+  }
 
   function rebuildCueList() {
     cueList = [...cues.values()].sort((a, b) => a.begin - b.begin);
@@ -361,7 +392,11 @@
     if (!prefetchOn || !state.enabled || musicMode()) return;
     const video = activeVideo();
     if (!video) return;
-    const cue = activeCue(video.currentTime);
+    if (!syncSamples.length) {
+      pumpPrefetch(video.currentTime + syncOffset);
+      return; // display stays with the live path until calibrated
+    }
+    const cue = activeCue(video.currentTime + syncOffset);
     const key = cue ? `${cue.begin}|${cue.text}` : "";
     if (key !== lastCueKey) {
       lastCueKey = key;
@@ -371,7 +406,7 @@
     } else if (cue && cue.out && box.textContent !== cue.out) {
       show(cue.out);
     }
-    pumpPrefetch(video.currentTime);
+    pumpPrefetch(video.currentTime + syncOffset);
   }, 200);
 
   // First untranslated cue from the playhead forward; if everything ahead is
@@ -1456,6 +1491,7 @@
     // Prefetch mode paints from the cue clock; the DOM path's only remaining
     // job is hiding the player's own captions as they appear.
     if (prefetchOn) {
+      if (text) calibrateSync(text);
       if (text && !state.showOriginal) {
         const node =
           findSmallestMatchingDescendant(state.subtitleRoot, text) ||
@@ -1464,7 +1500,9 @@
           node && node.closest('.shaka-text-container, [class*="caption" i]');
         if (container) hideNode(container);
       }
-      return;
+      // Uncalibrated cue clock would paint out of sync — let the live path
+      // keep driving until the first DOM/cue match lands.
+      if (syncSamples.length) return;
     }
     if (siteAdapter && siteAdapter.rolling) {
       readRolling(text);
