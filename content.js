@@ -181,6 +181,7 @@
   hideCss.id = "prime-subtitle-hide-css";
   hideCss.textContent = [
     ".shaka-text-container,",
+    ".vjs-text-track-display,",
     ".atvwebplayersdk-captions-text,",
     ".ytp-caption-window-container,",
     ".player-timedtext,",
@@ -1429,6 +1430,7 @@
     // captions (YouTube). Scoring in pickRoot chooses among candidates.
     const selectors = [
       ".shaka-text-container",
+      ".vjs-text-track-display",
       ".ytp-caption-window-container",
       ".atvwebplayersdk-caption",
       ".atvwebplayersdk-captions-container",
@@ -1463,7 +1465,7 @@
     for (const el of roots) {
       const text = (el.innerText || "").trim();
       const score =
-        (/caption|shaka-text|timedtext/i.test(el.className || "") ? 10 : 0) +
+        (/caption|shaka-text|timedtext|vjs-text-track/i.test(el.className || "") ? 10 : 0) +
         (text.length > 0 ? 5 : 0) +
         (el.querySelectorAll("*").length > 0 ? 2 : 0) +
         (el.getBoundingClientRect().top > window.innerHeight * 0.4 ? 2 : 0);
@@ -1478,7 +1480,7 @@
       state.subtitleRoot &&
       document.contains(state.subtitleRoot) &&
       best !== state.subtitleRoot &&
-      !/caption|shaka-text|timedtext/i.test(best && best.className || "")
+      !/caption|shaka-text|timedtext|vjs-text-track/i.test(best && best.className || "")
     ) {
       return state.subtitleRoot;
     }
@@ -1929,7 +1931,7 @@
           findSmallestMatchingDescendant(state.subtitleRoot, text) ||
           findSubtitleNode(state.subtitleRoot, text);
         const container =
-          node && node.closest('.shaka-text-container, [class*="caption" i]');
+          node && node.closest('.shaka-text-container, .vjs-text-track-display, [class*="caption" i]');
         if (container) hideNode(container);
       }
       // Uncalibrated cue clock would paint out of sync — let the live path
@@ -2078,7 +2080,7 @@
         // Hide the caption container, not the matched leaf: players recreate
         // text spans per cue (fresh spans show through), and the matched node
         // often carries only a hashed class (Prime), so leaf-level rules miss.
-        const captionContainer = subtitleNode.closest('.shaka-text-container, [class*="caption" i]');
+        const captionContainer = subtitleNode.closest('.shaka-text-container, .vjs-text-track-display, [class*="caption" i]');
         if (captionContainer && !state.showOriginal) {
           hideNode(captionContainer);
         }
