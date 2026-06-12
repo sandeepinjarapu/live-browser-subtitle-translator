@@ -43,6 +43,7 @@
     targetLanguage: "Telugu",
     video: null,
     settingsOpen: false,
+    tracks: [], // subtitle track files captured by pagehook.js (prefetch probe)
   };
 
   const box = document.createElement("div");
@@ -204,6 +205,21 @@
   function log(...args) {
     console.log("[Prime Subtitle Light]", ...args);
   }
+
+  // Prefetch probe: pagehook.js (MAIN world) forwards subtitle-track files
+  // it spots in the player's own network traffic. For now: capture + log.
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || !event.data || event.data.source !== "lst-track") return;
+    const { url, contentType, body } = event.data;
+    if (state.tracks.some((t) => t.url === url)) return;
+    state.tracks.push({ url, contentType, body, at: Date.now() });
+    log(
+      `track captured (#${state.tracks.length}):`,
+      url,
+      `[${contentType || "no content-type"}, ${body.length} chars]`
+    );
+    log("track head:", body.slice(0, 300));
+  });
 
   // Anchor the overlay to the video's rectangle, not the viewport: in
   // windowed layouts a viewport-bottom overlay sits on the player controls.
