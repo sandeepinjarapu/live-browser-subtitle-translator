@@ -578,11 +578,30 @@
     log("prefetch reset:", reason);
   }
 
+  // Seeks, ad breaks, and source swaps jump video.currentTime against the
+  // track clock; a stale offset then paints lines seconds off. Compare
+  // playback advance to wall clock per tick and re-calibrate on any jump.
+  let lastTickTime = 0;
+  let lastTickAt = 0;
+
   setInterval(() => {
     if (location.href !== prefetchHref) resetPrefetch("navigation");
     if (!prefetchOn || !state.enabled || musicMode()) return;
     const video = activeVideo();
     if (!video) return;
+    const now = Date.now();
+    if (lastTickAt && syncSamples.length && !video.paused) {
+      const advanced = video.currentTime - lastTickTime;
+      const elapsed = (now - lastTickAt) / 1000;
+      if (Math.abs(advanced - elapsed) > 2) {
+        syncSamples = [];
+        lastCueKey = "~init";
+        show("");
+        log("timeline jump — recalibrating cue clock");
+      }
+    }
+    lastTickTime = video.currentTime;
+    lastTickAt = now;
     if (!syncSamples.length) {
       pumpPrefetch(video.currentTime + syncOffset);
       return; // display stays with the live path until calibrated
