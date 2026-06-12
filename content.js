@@ -252,6 +252,7 @@
     if (state.tracks.some((t) => t.url === url && t.size === body.length)) return;
     state.tracks.push({ url, contentType, kind, size: body.length, at: Date.now() });
     const added = parseTtmlCues(body);
+    rebuildCueList();
     const times = [...cues.values()].map((c) => c.begin);
     log(
       `track captured (#${state.tracks.length}, ${kind}, ${body.length} chars):`,
@@ -266,6 +267,93 @@
       window.postMessage({ source: "lst-fetch-track", url }, "*");
     }
   });
+
+  // ---- Prefetch playback: paint cues on the video clock, translate ahead ----
+  // With the full track in hand, display needs no DOM timing at all: an
+  // interval matches cues against video.currentTime (zero perceived lag) and
+  // a sequential pump translates forward from the playhead, so seeks just
+  // change where the pump resumes. Threshold 100 cues = clearly a full
+  // track, not the player's small Range windows.
+  let cueList = [];
+  let prefetchOn = false;
+  let pumpBusy = false;
+  let pumpDone = 0;
+  let lastCueKey = "";
+
+  function rebuildCueList() {
+    cueList = [...cues.values()].sort((a, b) => a.begin - b.begin);
+    if (!prefetchOn && cueList.length >= 100) {
+      prefetchOn = true;
+      log(`prefetch mode ON: ${cueList.length} cues`);
+    }
+  }
+
+  function cueEnd(cue) {
+    return isNaN(cue.end) ? cue.begin + 6 : cue.end;
+  }
+
+  function activeCue(t) {
+    let current = null;
+    for (const cue of cueList) {
+      if (cue.begin > t) break;
+      if (t <= cueEnd(cue) + 0.3) current = cue;
+    }
+    return current;
+  }
+
+  setInterval(() => {
+    if (!prefetchOn || !state.enabled || musicMode()) return;
+    const video = activeVideo();
+    if (!video) return;
+    const cue = activeCue(video.currentTime);
+    const key = cue ? `${cue.begin}|${cue.text}` : "";
+    if (key !== lastCueKey) {
+      lastCueKey = key;
+      // Original English as the stopgap until the translation lands (cold
+      // start or right after a seek); the pump normally stays ahead.
+      show(cue ? cue.out || cue.text : "");
+    } else if (cue && cue.out && box.textContent !== cue.out) {
+      show(cue.out);
+    }
+    pumpPrefetch(video.currentTime);
+  }, 200);
+
+  function pumpPrefetch(t) {
+    if (pumpBusy || document.hidden) return;
+    let next = null;
+    let idx = -1;
+    for (let i = 0; i < cueList.length; i++) {
+      const c = cueList[i];
+      if (cueEnd(c) < t - 1) continue;
+      if (c.out || (c.tried || 0) >= 2) continue;
+      if (!isTranslatableEnglish(c.text)) {
+        c.out = c.text;
+        continue;
+      }
+      next = c;
+      idx = i;
+      break;
+    }
+    if (!next) return;
+    pumpBusy = true;
+    // The pump is sequential, so pointing the shared prompt context at this
+    // cue's predecessors is safe (the live DOM path is off in prefetch mode).
+    state.prevLines = cueList.slice(Math.max(0, idx - 2), idx).map((c) => c.text);
+    const backend = state.translatorBackend === "libre" ? translateWithLibre : translateWithGemma;
+    backend(next.text)
+      .then((translated) => {
+        next.out = translated || next.text;
+        pumpDone++;
+        if (pumpDone % 25 === 0) log(`prefetch translated ${pumpDone} cues`);
+      })
+      .catch((error) => {
+        next.tried = (next.tried || 0) + 1;
+        log("prefetchError", String(error));
+      })
+      .then(() => {
+        pumpBusy = false;
+      });
+  }
 
   // Anchor the overlay to the video's rectangle, not the viewport: in
   // windowed layouts a viewport-bottom overlay sits on the player controls.
@@ -1303,6 +1391,19 @@
     if (!state.enabled) return;
     const text = extractText(state.subtitleRoot);
     if (text) state.lastCaptionTextAt = Date.now();
+    // Prefetch mode paints from the cue clock; the DOM path's only remaining
+    // job is hiding the player's own captions as they appear.
+    if (prefetchOn) {
+      if (text && !state.showOriginal) {
+        const node =
+          findSmallestMatchingDescendant(state.subtitleRoot, text) ||
+          findSubtitleNode(state.subtitleRoot, text);
+        const container =
+          node && node.closest('.shaka-text-container, [class*="caption" i]');
+        if (container) hideNode(container);
+      }
+      return;
+    }
     if (siteAdapter && siteAdapter.rolling) {
       readRolling(text);
       return;
