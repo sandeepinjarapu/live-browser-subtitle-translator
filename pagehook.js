@@ -8,13 +8,23 @@
 
   // URL/content-type gate decides whether we read a body at all; the body
   // sniff makes the final call, so the gate can afford to be generous.
-  var URL_RE = /ttml|dfxp|timedtext|imsc|\.vtt|\.srt|\.xml/i;
+  var URL_RE = /ttml|dfxp|timedtext|imsc|\.vtt|\.srt|\.xml|caption|subtitle/i;
   var TYPE_RE = /ttml|vtt|subrip|dfxp|xml/i;
   var MAX_BODY = 4 * 1024 * 1024;
 
   function looksLikeTrack(body) {
     var head = body.slice(0, 2000);
     return /^WEBVTT/.test(head) || /<tt[\s>:]/i.test(head) || /<timedtext/i.test(head);
+  }
+
+  // Diagnosis aid: surface every subtitle-ish URL even when the body sniff
+  // rejects it, so we can see what the player actually requests.
+  function candidate(url, contentType, via) {
+    if (!URL_RE.test(url)) return;
+    window.postMessage(
+      { source: "lst-track-candidate", url: String(url), contentType: contentType || "", via: via },
+      "*"
+    );
   }
 
   function report(url, contentType, body) {
@@ -33,6 +43,7 @@
       var url = typeof args[0] === "string" ? args[0] : (args[0] && args[0].url) || "";
       p.then(function (res) {
         var type = res.headers.get("content-type") || "";
+        candidate(res.url || url, type, "fetch");
         if (!URL_RE.test(url) && !TYPE_RE.test(type)) return;
         res
           .clone()
@@ -61,11 +72,16 @@
       try {
         var url = xhr.responseURL || xhr.__lstUrl || "";
         var type = xhr.getResponseHeader("content-type") || "";
+        candidate(url, type, "xhr:" + (xhr.responseType || "text"));
         if (!URL_RE.test(url) && !TYPE_RE.test(type)) return;
         if (xhr.responseType === "" || xhr.responseType === "text") {
           report(url, type, xhr.responseText);
         } else if (xhr.responseType === "arraybuffer" && xhr.response) {
           report(url, type, new TextDecoder().decode(xhr.response));
+        } else if (xhr.responseType === "blob" && xhr.response) {
+          xhr.response.text().then(function (body) {
+            report(url, type, body);
+          }).catch(function () {});
         }
       } catch (e) {
         // sniffing must never affect the player's request handling

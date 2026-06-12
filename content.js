@@ -209,7 +209,12 @@
   // Prefetch probe: pagehook.js (MAIN world) forwards subtitle-track files
   // it spots in the player's own network traffic. For now: capture + log.
   window.addEventListener("message", (event) => {
-    if (event.source !== window || !event.data || event.data.source !== "lst-track") return;
+    if (event.source !== window || !event.data) return;
+    if (event.data.source === "lst-track-candidate") {
+      log("track candidate:", event.data.via, event.data.url, `[${event.data.contentType || "?"}]`);
+      return;
+    }
+    if (event.data.source !== "lst-track") return;
     const { url, contentType, body } = event.data;
     if (state.tracks.some((t) => t.url === url)) return;
     state.tracks.push({ url, contentType, body, at: Date.now() });
