@@ -1573,6 +1573,10 @@
         if (seenEls.has(el)) continue;
         seenEls.add(el);
         if (/^(SCRIPT|STYLE|LINK|META|NOSCRIPT)$/.test(el.tagName)) continue;
+        // Caption containers are never interactive controls: player control
+        // bars are full of caption-classed buttons (Shaka's CC toggle carries
+        // "shaka-caption-button" + status text) that outscore the real root.
+        if (el.closest('button, [role="button"]')) continue;
         out.push(el);
         if (out.length >= 40) return out;
       }
@@ -1684,6 +1688,8 @@
     /^(subtitle|audio)?\s*stream[_\s]?\d+\b/i,
     // UI labels carrying a keyboard mnemonic ("Close(_C)") — dialogs, menus
     /^.{1,30}\(_[A-Za-z]\)$/,
+    // CC-toggle status labels ("closed_caption", "Closed Captions Off")
+    /^closed[_\s-]?captions?(\s+(on|off))?$/i,
   ];
 
   function noisePatterns() {
