@@ -277,7 +277,11 @@
     let added = 0;
     for (const ev of data.events) {
       if (!Array.isArray(ev.segs) || ev.aAppend || typeof ev.tStartMs !== "number") continue;
-      const text = ev.segs.map((s) => s.utf8 || "").join("").replace(/\s+/g, " ").trim();
+      // ASR cues carry stutters and [Music]-style tags — same cleanup the
+      // live path applies.
+      const text = cleanAutoCaption(
+        ev.segs.map((s) => s.utf8 || "").join("").replace(/\s+/g, " ").trim()
+      );
       if (!text) continue;
       const begin = ev.tStartMs / 1000;
       const end = ev.dDurationMs ? (ev.tStartMs + ev.dDurationMs) / 1000 : NaN;
@@ -532,7 +536,6 @@
   // track, not the player's small Range windows.
   let cueList = [];
   let prefetchOn = false;
-  let pumpBusy = false;
   let pumpDone = 0;
   let lastCueKey = "~init"; // not "" so the first tick always paints/clears
 
@@ -706,7 +709,7 @@
     let wrapIdx = -1;
     for (let i = 0; i < cueList.length; i++) {
       const c = cueList[i];
-      if (c.out || (c.tried || 0) >= 2) continue;
+      if (c.out || c.inFlight || (c.tried || 0) >= 2) continue;
       if (!isTranslatableEnglish(c.text)) {
         c.out = c.text;
         continue;
@@ -717,42 +720,52 @@
     return wrapIdx;
   }
 
+  // Two requests in flight: the live path is idle in prefetch mode, so its
+  // Ollama slot (OLLAMA_NUM_PARALLEL=2) is free — halves full-track time
+  // and post-seek catch-up.
+  const PUMP_CONCURRENCY = 2;
+  let pumpActive = 0;
+
   function pumpPrefetch(t) {
-    if (pumpBusy || document.hidden) return;
+    if (document.hidden) return;
     if (lexiconState === "pending") return; // one pre-pass call, then flow
-    const idx = nextUntranslated(t);
-    if (idx === -1) return;
-    const next = cueList[idx];
-    pumpBusy = true;
-    // The pump is sequential, so pointing the shared prompt context at this
-    // cue's predecessors is safe (the live DOM path is off in prefetch mode).
-    state.prevLines = cueList.slice(Math.max(0, idx - 2), idx).map((c) => c.text);
-    const backend = state.translatorBackend === "libre" ? translateWithLibre : translateWithGemma;
-    // Translate speaker turns separately so the rendered split (and leading
-    // dashes) match the original cue.
-    const job = (async () => {
-      const outs = [];
-      for (const part of next.text.split("\n")) {
-        const src = part.replace(/^-\s*/, "");
-        const translated = (await backend(src)) || src;
-        outs.push(part === src ? translated : `- ${translated}`);
-      }
-      return outs.join("\n");
-    })();
-    job
-      .then((translated) => {
-        next.out = translated || next.text;
-        pumpDone++;
-        if (pumpDone % 25 === 0) log(`prefetch translated ${pumpDone} cues`);
-        scheduleSave();
-      })
-      .catch((error) => {
-        next.tried = (next.tried || 0) + 1;
-        log("prefetchError", String(error));
-      })
-      .then(() => {
-        pumpBusy = false;
-      });
+    while (pumpActive < PUMP_CONCURRENCY) {
+      const idx = nextUntranslated(t);
+      if (idx === -1) return;
+      const next = cueList[idx];
+      next.inFlight = true;
+      pumpActive++;
+      // prevLines is read synchronously when the prompt is built, so setting
+      // it just before each dispatch is safe even with two in flight.
+      state.prevLines = cueList.slice(Math.max(0, idx - 2), idx).map((c) => c.text);
+      const backend = state.translatorBackend === "libre" ? translateWithLibre : translateWithGemma;
+      // Translate speaker turns separately so the rendered split (and leading
+      // dashes) match the original cue.
+      const job = (async () => {
+        const outs = [];
+        for (const part of next.text.split("\n")) {
+          const src = part.replace(/^-\s*/, "");
+          const translated = (await backend(src)) || src;
+          outs.push(part === src ? translated : `- ${translated}`);
+        }
+        return outs.join("\n");
+      })();
+      job
+        .then((translated) => {
+          next.out = translated || next.text;
+          pumpDone++;
+          if (pumpDone % 25 === 0) log(`prefetch translated ${pumpDone} cues`);
+          scheduleSave();
+        })
+        .catch((error) => {
+          next.tried = (next.tried || 0) + 1;
+          log("prefetchError", String(error));
+        })
+        .then(() => {
+          next.inFlight = false;
+          pumpActive--;
+        });
+    }
   }
 
   // Anchor the overlay to the video's rectangle, not the viewport: in
