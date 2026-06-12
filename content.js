@@ -388,6 +388,23 @@
     return current;
   }
 
+  // Settings that change translation output (backend, model, language,
+  // style) invalidate already-translated cues — without this the pump's
+  // earlier output keeps painting in the old language/model. Re-keys the
+  // disk cache too, so a previously saved run under the new settings restores.
+  function flushCueTranslations() {
+    if (!cueList.length && !trackKey) return;
+    for (const c of cueList) {
+      c.out = null;
+      c.tried = 0;
+    }
+    pumpDone = 0;
+    lastCueKey = "~init";
+    trackKey = state.tracks.length ? trackStorageKey(state.tracks[0].url) : "";
+    loadSavedTranslations();
+    log("cue translations flushed (settings change)");
+  }
+
   // Prime is an SPA: title changes (and next-episode autoplay) swap content
   // without a page load, so per-episode prefetch state must be torn down or
   // the old show's cues keep painting over the new one.
@@ -606,6 +623,7 @@
   function setGemmaModel(model) {
     state.gemmaModel = model;
     saveSetting("gemmaModel", model);
+    flushCueTranslations();
     updateBackendButtons();
     scheduleRead();
   }
@@ -679,10 +697,12 @@
       }
       if (changes.styleProfile && changes.styleProfile.newValue !== state.styleProfile) {
         state.styleProfile = changes.styleProfile.newValue;
+        flushCueTranslations();
         applyHideState();
         updateBackendButtons();
       }
       if (translationAffected) {
+        flushCueTranslations();
         updateBackendButtons();
         pingTranslator();
         state.lastText = "";
@@ -719,6 +739,7 @@
     state.translatorBackend = ["gemma", "hybrid"].includes(backend) ? backend : "libre";
     saveSetting("translatorBackend", state.translatorBackend);
     state.translationCache.clear();
+    flushCueTranslations();
     updateBackendButtons();
     pingTranslator();
     scheduleRead();
@@ -1723,6 +1744,7 @@
     button.addEventListener("click", () => {
       state.styleProfile = button.dataset.style;
       saveSetting("styleProfile", state.styleProfile);
+      flushCueTranslations();
       applyHideState(); // override may enter/exit music mode
       updateBackendButtons();
       scheduleRead();
@@ -1739,6 +1761,7 @@
     languageSelect.addEventListener("change", (event) => {
       state.targetLanguage = event.target.value;
       saveSetting("targetLanguage", state.targetLanguage);
+      flushCueTranslations();
       scheduleRead();
     });
   }
