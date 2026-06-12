@@ -312,9 +312,43 @@
     return added;
   }
 
+  // WebVTT (Shaka/HLS players, often as many small segment files — cues
+  // accumulate across captures). Constant timestamp offsets from HLS
+  // timestamp maps are absorbed by the DOM calibration like any other.
+  function parseVttClock(value) {
+    const m = (value || "").trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{2}(?:\.\d+)?)$/);
+    if (!m) return NaN;
+    return (m[1] ? +m[1] : 0) * 3600 + +m[2] * 60 + parseFloat(m[3]);
+  }
+
+  function parseVttCues(body) {
+    let added = 0;
+    for (const block of body.replace(/\r/g, "").split(/\n\n+/)) {
+      const lines = block.split("\n");
+      const timeIdx = lines.findIndex((l) => l.includes("-->"));
+      if (timeIdx === -1) continue;
+      const [rawBegin, rawEnd] = lines[timeIdx].split("-->");
+      const begin = parseVttClock(rawBegin);
+      const end = parseVttClock((rawEnd || "").trim().split(/\s+/)[0]);
+      const text = lines
+        .slice(timeIdx + 1)
+        .map((l) => l.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .join("\n");
+      if (!text || isNaN(begin)) continue;
+      const key = `${begin}|${text}`;
+      if (!cues.has(key)) {
+        cues.set(key, { begin, end, text });
+        added++;
+      }
+    }
+    return added;
+  }
+
   function parseTrack(body, kind) {
     if (kind === "yt-json") return parseYtJsonCues(body);
     if (kind === "timedtext-xml") return parseTimedtextCues(body);
+    if (kind === "vtt") return parseVttCues(body);
     return parseTtmlCues(body);
   }
 
