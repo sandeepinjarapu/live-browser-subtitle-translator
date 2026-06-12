@@ -275,6 +275,7 @@
     rebuildCueList();
     if (!trackKey) trackKey = trackStorageKey(url);
     if (added) loadSavedTranslations();
+    if (prefetchOn && lexiconState === "idle") buildLexicon();
     const times = [...cues.values()].map((c) => c.begin);
     log(
       `track captured (#${state.tracks.length}, ${kind}, ${body.length} chars):`,
@@ -351,6 +352,120 @@
     });
   } catch {
     // extension reloaded out from under us
+  }
+
+  // ---- Episode lexicon: one pre-pass call when the full track lands ----
+  // Holding the whole script lets the model make episode-level judgments
+  // once instead of guessing per line: which English terms stay English in
+  // the target language (code-mixing), and one committed transliteration
+  // per recurring name so every cue prompt carries the same spellings.
+  let lexicon = null; // { keepEnglish: [...], names: { src: target } }
+  let lexiconStamp = 0; // participates in the gemma cache key
+  let lexiconState = "idle"; // idle | pending | done
+
+  async function gemmaOnce(prompt, numPredict) {
+    const response = await bgFetch("http://127.0.0.1:11434/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: state.gemmaModel,
+        think: false,
+        prompt,
+        stream: false,
+        keep_alive: "30m",
+        options: { temperature: 0, num_predict: numPredict },
+      }),
+    });
+    if (!response.ok) throw new Error(`ollama ${response.status}`);
+    const data = JSON.parse(response.body);
+    return (data && data.response) || "";
+  }
+
+  function candidateNames() {
+    const counts = new Map();
+    for (const cue of cueList) {
+      for (const match of cue.text.matchAll(/\b([A-Z][a-z]{2,}|[A-Z]{2,5})\b/g)) {
+        const word = match[1];
+        if (NAME_STOPWORDS.has(word)) continue;
+        counts.set(word, (counts.get(word) || 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .filter(([, n]) => n >= 2)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([w]) => w);
+  }
+
+  function adoptLexicon(value, origin) {
+    lexicon = {
+      keepEnglish: Array.isArray(value.keepEnglish) ? value.keepEnglish.slice(0, 16) : [],
+      names: value.names && typeof value.names === "object" ? value.names : {},
+    };
+    lexiconStamp++;
+    log(
+      `lexicon ${origin}: keep-English [${lexicon.keepEnglish.join(", ")}],`,
+      `names ${Object.entries(lexicon.names).map(([k, v]) => `${k}=${v}`).join(", ") || "(none)"}`
+    );
+  }
+
+  function buildLexicon() {
+    if (lexiconState !== "idle") return;
+    if (state.translatorBackend === "libre") {
+      lexiconState = "done"; // libre takes no prompts — nothing to inject
+      return;
+    }
+    lexiconState = "pending";
+    const lexKey = trackKey ? `${trackKey}:lex` : "";
+    const generate = () => {
+      const lines = cueList
+        .map((c) => c.text.replace(/\n/g, " "))
+        .filter((t) => isTranslatableEnglish(t));
+      const step = Math.max(1, Math.floor(lines.length / 60));
+      const sample = lines.filter((_, i) => i % step === 0).slice(0, 60);
+      const names = candidateNames();
+      const prompt = [
+        `You are preparing to subtitle a show into ${state.targetLanguage}. ${state.targetLanguage} subtitles keep certain English terms untranslated (institutions, acronyms, exams, technical and modern terms).`,
+        `From the sample lines and candidate names below, reply with ONLY JSON in this exact shape, no commentary:`,
+        `{"keepEnglish": ["term", ...], "names": {"CandidateName": "${state.targetLanguage} transliteration", ...}}`,
+        names.length ? `Candidate names: ${names.join(", ")}` : "",
+        "Sample lines:",
+        ...sample,
+      ].filter(Boolean).join("\n");
+      gemmaOnce(prompt, 512)
+        .then((raw) => {
+          const jsonText = raw.replace(/^[\s\S]*?{/, "{").replace(/}[^}]*$/, "}");
+          adoptLexicon(JSON.parse(jsonText), "built");
+          if (lexKey) {
+            try {
+              chrome.storage.local.set({ [lexKey]: { savedAt: Date.now(), ...lexicon } });
+            } catch {
+              // extension reloaded out from under us
+            }
+          }
+        })
+        .catch((error) => log("lexiconError", String(error)))
+        .then(() => {
+          lexiconState = "done"; // failed pre-pass must not hold the pump
+        });
+    };
+    if (!lexKey) {
+      generate();
+      return;
+    }
+    try {
+      chrome.storage.local.get(lexKey, (items) => {
+        const saved = items && items[lexKey];
+        if (saved) {
+          adoptLexicon(saved, "restored");
+          lexiconState = "done";
+        } else {
+          generate();
+        }
+      });
+    } catch {
+      generate();
+    }
   }
 
   // ---- Prefetch playback: paint cues on the video clock, translate ahead ----
@@ -431,6 +546,11 @@
     lastCueKey = "~init";
     trackKey = state.tracks.length ? trackStorageKey(state.tracks[0].url) : "";
     loadSavedTranslations();
+    // Lexicon depends on language/model — rebuild under the new settings
+    // (the per-track save key follows trackKey, so a saved one restores).
+    lexicon = null;
+    lexiconState = "idle";
+    if (prefetchOn) buildLexicon();
     log("cue translations flushed (settings change)");
   }
 
@@ -452,6 +572,8 @@
     syncOffset = 0;
     syncSamples = [];
     lastCueKey = "~init";
+    lexicon = null;
+    lexiconState = "idle";
     show("");
     log("prefetch reset:", reason);
   }
@@ -497,6 +619,7 @@
 
   function pumpPrefetch(t) {
     if (pumpBusy || document.hidden) return;
+    if (lexiconState === "pending") return; // one pre-pass call, then flow
     const idx = nextUntranslated(t);
     if (idx === -1) return;
     const next = cueList[idx];
@@ -837,7 +960,7 @@
     // Same line under different preceding context can translate differently
     // (pronouns, tense), so the context participates in the key.
     const context = state.prevLines.filter((l) => l !== normalized).join("\n");
-    const cacheKey = `gemma:${state.gemmaModel}:${lang}:${effectiveStyle()}:${context.slice(-48)}:${normalized}`;
+    const cacheKey = `gemma:${state.gemmaModel}:${lang}:${effectiveStyle()}:lex${lexiconStamp}:${context.slice(-48)}:${normalized}`;
     if (state.translationCache.has(cacheKey)) {
       return state.translationCache.get(cacheKey);
     }
@@ -855,7 +978,19 @@
         prompt: [
           `Translate the English subtitle into natural ${lang}. Reply with only the ${lang} translation of the subtitle, even if it is short or ambiguous.`,
           styleInstruction(lang),
-          ...(state.glossaryNames.length
+          // Episode lexicon (prefetch pre-pass) supersedes the reactive
+          // live-path glossary: committed spellings beat "be consistent".
+          ...(lexicon && lexicon.keepEnglish.length
+            ? [`Keep these terms in English: ${lexicon.keepEnglish.join(", ")}.`]
+            : []),
+          ...(lexicon && Object.keys(lexicon.names).length
+            ? [
+                `Use these spellings for names: ${Object.entries(lexicon.names)
+                  .map(([src, out]) => `${src} = ${out}`)
+                  .join(", ")}.`,
+              ]
+            : []),
+          ...(!lexicon && state.glossaryNames.length
             ? [`Transliterate these names consistently: ${state.glossaryNames.join(", ")}.`]
             : []),
           ...(context ? [`Previous lines (context only, do not translate):\n${context}`] : []),
