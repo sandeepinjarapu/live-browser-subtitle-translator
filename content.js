@@ -358,6 +358,58 @@
     return added;
   }
 
+  // ---- Native TextTrack harvest ----
+  // Some players (SonyLIV) attach the full subtitle file to the <video> as a
+  // hidden native TextTrack: every cue, already parsed, on the video's own
+  // timeline — a prefetch source that needs no network interception. Only
+  // enabled tracks ("hidden"/"showing") carry cues, so the player's own
+  // selection picks the language for us. Harvest is incremental: some
+  // players append cues as segments load.
+  let nativeHarvestGen = 0;
+  const nativeHarvested = new WeakMap(); // TextTrack -> { gen, count }
+  let nativeClock = false;
+
+  function harvestNativeTracks() {
+    const video = activeVideo();
+    if (!video || !video.textTracks) return;
+    for (const track of video.textTracks) {
+      if (track.kind !== "subtitles" && track.kind !== "captions") continue;
+      if (track.mode === "disabled" || !track.cues || !track.cues.length) continue;
+      const seen = nativeHarvested.get(track);
+      if (seen && seen.gen === nativeHarvestGen && seen.count === track.cues.length) continue;
+      nativeHarvested.set(track, { gen: nativeHarvestGen, count: track.cues.length });
+      let added = 0;
+      for (const c of track.cues) {
+        const text = String(c.text || "")
+          .split("\n")
+          .map((l) => decodeEntities(l.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim())
+          .filter(Boolean)
+          .join("\n");
+        if (!text) continue;
+        const key = `${c.startTime}|${text}`;
+        if (cues.has(key)) continue;
+        cues.set(key, { begin: c.startTime, end: c.endTime, text });
+        added++;
+      }
+      if (!added) continue;
+      // Native cue times share the video element's clock — no calibration.
+      nativeClock = true;
+      rebuildCueList();
+      // Synthetic per-episode URL so persistence keying works unchanged.
+      const url = `https://native-texttrack.local${location.pathname}`;
+      if (!state.tracks.some((t) => t.url === url)) {
+        state.tracks.push({ url, contentType: "", kind: "native", size: track.cues.length, at: Date.now() });
+      }
+      if (!trackKey) trackKey = trackStorageKey(url);
+      loadSavedTranslations();
+      if (prefetchOn && lexiconState === "idle") buildLexicon();
+      log(
+        `native textTrack harvested (${track.label || track.language || track.kind}):`,
+        `+${added} cues, total ${cues.size}`
+      );
+    }
+  }
+
   function parseTrack(body, kind) {
     if (kind === "yt-json") return parseYtJsonCues(body);
     if (kind === "timedtext-xml") return parseTimedtextCues(body);
@@ -640,7 +692,7 @@
   // The cue clock is usable once calibrated against the player's captions,
   // or immediately on sites whose track timestamps share the video timeline.
   function cueClockUsable() {
-    return syncSamples.length > 0 || !!(siteAdapter && siteAdapter.trustCueClock);
+    return nativeClock || syncSamples.length > 0 || !!(siteAdapter && siteAdapter.trustCueClock);
   }
 
   function adPlaying() {
@@ -697,6 +749,8 @@
     prefetchOn = false;
     pumpDone = 0;
     trackKey = "";
+    nativeHarvestGen++;
+    nativeClock = false;
     syncOffset = 0;
     syncSamples = [];
     everCalibrated = false;
@@ -2260,6 +2314,7 @@
   watchVideoSeeks();
   setInterval(() => {
     watchVideoSeeks();
+    harvestNativeTracks();
     positionOverlay();
     const wasMusic = musicMode();
     refreshCategory();
