@@ -1456,9 +1456,60 @@
     return out;
   }
 
+  // Behavioral root discovery: subtitle DOM markup has no standard, so the
+  // class-name vocabulary can miss unknown players. But when we hold the
+  // track, the element whose text matches a cue scheduled near the playhead
+  // IS the caption container — no player knowledge needed. Returns the
+  // outermost element whose entire text is the matched cue, so the root
+  // survives per-cue node recreation.
+  let lastCueRootScanAt = 0;
+  let cueTextRoot = null;
+  function findRootByCueText() {
+    if (!cueList.length) return null;
+    const video = activeVideo();
+    if (!video || !video.currentTime) return null;
+    const now = Date.now();
+    if (now - lastCueRootScanAt < 2000) return null; // full-DOM walk — throttle
+    lastCueRootScanAt = now;
+    const texts = new Set();
+    for (const cue of cueList) {
+      if (Math.abs(cue.begin - video.currentTime) > 120) continue;
+      const t = cue.text.replace(/\s+/g, " ").trim();
+      if (t.length >= 8) texts.add(t); // short lines match chrome/menus too easily
+    }
+    if (!texts.size) return null;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      let el = node.parentElement;
+      if (!el || /^(SCRIPT|STYLE|NOSCRIPT)$/.test(el.tagName)) continue;
+      if (el.closest("#prime-subtitle-overlay-host, #prime-subtitle-overlay")) continue;
+      // The text node may be one line of a multi-line cue — check its parent too.
+      let match = null;
+      for (let depth = 0; el && depth < 3; depth++, el = el.parentElement) {
+        if (texts.has((el.innerText || "").replace(/\s+/g, " ").trim())) {
+          match = el;
+        }
+      }
+      if (!match) continue;
+      // Climb to the outermost exact-text ancestor (e.g. the cue node's
+      // persistent display container, which holds nothing but the caption).
+      const matchedText = (match.innerText || "").replace(/\s+/g, " ").trim();
+      while (
+        match.parentElement &&
+        match.parentElement !== document.body &&
+        (match.parentElement.innerText || "").replace(/\s+/g, " ").trim() === matchedText
+      ) {
+        match = match.parentElement;
+      }
+      log("caption root found by cue-text match:", match);
+      return match;
+    }
+    return null;
+  }
+
   function pickRoot() {
     const roots = candidateRoots();
-    if (!roots.length) return null;
 
     let best = null;
     let bestScore = -1;
@@ -1474,15 +1525,26 @@
         best = el;
       }
     }
-    // Stick with the current root unless the new pick is a caption element;
-    // generic containers flapping in and out re-trigger observers and drop lines.
-    if (
-      state.subtitleRoot &&
-      document.contains(state.subtitleRoot) &&
-      best !== state.subtitleRoot &&
-      !/caption|shaka-text|timedtext|vjs-text-track/i.test(best && best.className || "")
-    ) {
-      return state.subtitleRoot;
+    const CAPTION_CLASS_RE = /caption|shaka-text|timedtext|vjs-text-track/i;
+    const current =
+      state.subtitleRoot && document.contains(state.subtitleRoot) ? state.subtitleRoot : null;
+    // A root discovered by cue-text match is verified ground truth — keep it
+    // while it lives; no class-named candidate can outrank that evidence.
+    if (current && current === cueTextRoot) return current;
+    // No trusted root and no candidate carries a recognized caption class:
+    // unknown player markup. If we hold the track, find the container by
+    // matching cue text instead — runs before stickiness so a wrongly stuck
+    // generic root (e.g. a player menu item) can be displaced.
+    if (bestScore < 10) {
+      const found = findRootByCueText();
+      if (found) {
+        cueTextRoot = found;
+        return found;
+      }
+    }
+    // Stick with the current generic root unless the new pick is a caption element.
+    if (current && best !== current && !CAPTION_CLASS_RE.test(best && best.className || "")) {
+      return current;
     }
     return best;
   }
