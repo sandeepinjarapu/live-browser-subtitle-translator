@@ -47,6 +47,22 @@
     );
   }
 
+  // The content script can ask for a full-file re-fetch of a captured track
+  // URL (the player itself uses Range windows). Runs with the page's own
+  // CORS context, which the player's CDN already permits. Uses the original
+  // fetch so the wrapper below doesn't double-report it.
+  window.addEventListener("message", function (event) {
+    if (event.source !== window || !event.data || event.data.source !== "lst-fetch-track") return;
+    origFetch(event.data.url)
+      .then(function (res) {
+        var type = res.headers.get("content-type") || "";
+        return res.text().then(function (body) {
+          report(res.url || event.data.url, type, body);
+        });
+      })
+      .catch(function () {});
+  });
+
   var origFetch = window.fetch;
   window.fetch = function () {
     var args = arguments;

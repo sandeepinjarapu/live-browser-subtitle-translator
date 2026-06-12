@@ -206,24 +206,65 @@
     console.log("[Prime Subtitle Light]", ...args);
   }
 
-  // Prefetch probe: pagehook.js (MAIN world) forwards subtitle-track files
-  // it spots in the player's own network traffic. For now: capture + log.
+  // Prefetch: pagehook.js (MAIN world) forwards subtitle-track responses it
+  // spots in the player's own network traffic. Each capture is parsed into
+  // timed cues; the first segment also triggers a full-file re-fetch (the
+  // player pulls the track in Range windows, plain GET returns all of it).
+  const cues = new Map(); // "begin|text" -> { begin, end, text }
+  const fullFetchRequested = new Set();
+
+  function parseClock(value, tickRate) {
+    if (!value) return NaN;
+    if (/t$/.test(value)) return parseFloat(value) / (tickRate || 10000000);
+    if (/(ms|s)$/.test(value)) return /ms$/.test(value) ? parseFloat(value) / 1000 : parseFloat(value);
+    const parts = value.split(":");
+    if (parts.length === 3) return +parts[0] * 3600 + +parts[1] * 60 + parseFloat(parts[2]);
+    return NaN;
+  }
+
+  function parseTtmlCues(body) {
+    // fMP4 bodies hold one or more <tt> documents inside mdat boxes; a
+    // plain-text track is a single document. The regex handles both.
+    const docs = body.match(/<tt[\s>][\s\S]*?<\/tt>/g) || [];
+    let added = 0;
+    for (const docText of docs) {
+      const doc = new DOMParser().parseFromString(docText, "text/xml");
+      const tt = doc.documentElement;
+      const tickRate = Number(tt.getAttribute("ttp:tickRate")) || 0;
+      for (const p of doc.getElementsByTagName("p")) {
+        const begin = parseClock(p.getAttribute("begin"), tickRate);
+        const text = (p.textContent || "").replace(/\s+/g, " ").trim();
+        if (!text || isNaN(begin)) continue;
+        const key = `${begin}|${text}`;
+        if (cues.has(key)) continue;
+        cues.set(key, { begin, end: parseClock(p.getAttribute("end"), tickRate), text });
+        added++;
+      }
+    }
+    return added;
+  }
+
   window.addEventListener("message", (event) => {
     if (event.source !== window || !event.data) return;
-    if (event.data.source === "lst-track-candidate") {
-      log("track candidate:", event.data.via, event.data.url, `[${event.data.contentType || "?"}]`);
-      return;
-    }
+    if (event.data.source === "lst-track-candidate") return;
     if (event.data.source !== "lst-track") return;
     const { url, contentType, kind, body } = event.data;
     if (state.tracks.some((t) => t.url === url && t.body.length === body.length)) return;
-    state.tracks.push({ url, contentType, kind, body, at: Date.now() });
+    state.tracks.push({ url, contentType, kind, at: Date.now() });
+    const added = parseTtmlCues(body);
+    const times = [...cues.values()].map((c) => c.begin);
     log(
-      `track captured (#${state.tracks.length}, ${kind}):`,
-      url,
-      `[${contentType || "no content-type"}, ${body.length} chars]`
+      `track captured (#${state.tracks.length}, ${kind}, ${body.length} chars):`,
+      `+${added} cues, total ${cues.size},`,
+      times.length
+        ? `coverage ${Math.min(...times).toFixed(1)}s – ${Math.max(...times).toFixed(1)}s`
+        : "no cues"
     );
-    log("track head:", body.slice(0, 300));
+    if (kind === "ttml-mp4" && !fullFetchRequested.has(url)) {
+      fullFetchRequested.add(url);
+      log("requesting full track:", url);
+      window.postMessage({ source: "lst-fetch-track", url }, "*");
+    }
   });
 
   // Anchor the overlay to the video's rectangle, not the viewport: in
