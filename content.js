@@ -1108,20 +1108,30 @@
   // In prefetch mode the cue list says whether captions were even due in the
   // silent window (≥5s of scheduled cue time = the player should have shown
   // something). Without prefetch, assume they were — the old heuristic.
-  function captionsWereDue(video, silentMs) {
-    if (!prefetchOn || !cueList.length) return true;
-    // Post-jump (ad break) the offset is untrusted: the schedule can't say
-    // anything until re-lock. A lock that never happened means CC is off.
-    if (!syncSamples.length) return !everCalibrated;
-    const to = video.currentTime + syncOffset;
-    const from = to - silentMs / 1000;
+  function scheduledCueSeconds(from, to) {
     let due = 0;
     for (const cue of cueList) {
       if (cue.begin > to) break;
       const overlap = Math.min(cueEnd(cue), to) - Math.max(cue.begin, from);
       if (overlap > 0) due += overlap;
     }
-    return due >= 5;
+    return due;
+  }
+
+  function captionsWereDue(video, silentMs) {
+    if (!prefetchOn || !cueList.length) return true;
+    if (syncSamples.length) {
+      const to = video.currentTime + syncOffset;
+      return scheduledCueSeconds(to - silentMs / 1000, to) >= 5;
+    }
+    // Post-jump (ad break) the offset is untrusted: the schedule can't say
+    // anything until re-lock.
+    if (everCalibrated) return false;
+    // Never locked: offset unknown (calibration needs a caption to appear),
+    // so a quiet opening looks identical to CC-off for a while. Use the raw
+    // clock but demand much stronger evidence before nagging.
+    const to = video.currentTime;
+    return silentMs > 45000 && scheduledCueSeconds(to - silentMs / 1000, to) >= 15;
   }
 
   function updateCaptionHint() {
