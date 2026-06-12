@@ -681,7 +681,9 @@
   // Anchor the overlay to the video's rectangle, not the viewport: in
   // windowed layouts a viewport-bottom overlay sits on the player controls.
   function positionOverlay() {
-    const video = state.video || document.querySelector("video");
+    // activeVideo, not querySelector: in prefetch mode state.video is never
+    // bound, and Prime keeps dummy <video> elements with useless rects.
+    const video = state.video || activeVideo();
     const rect = video ? video.getBoundingClientRect() : null;
     if (!rect || !rect.height) {
       box.style.left = "50%";
