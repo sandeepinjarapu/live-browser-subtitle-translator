@@ -289,19 +289,23 @@
 
   function loadSavedTranslations() {
     if (!trackKey || !chrome.storage) return;
-    chrome.storage.local.get(trackKey, (items) => {
-      const saved = items && items[trackKey];
-      if (!saved || !Array.isArray(saved.entries)) return;
-      let applied = 0;
-      for (const [begin, text, out] of saved.entries) {
-        const cue = cues.get(`${begin}|${text}`);
-        if (cue && !cue.out) {
-          cue.out = out;
-          applied++;
+    try {
+      chrome.storage.local.get(trackKey, (items) => {
+        const saved = items && items[trackKey];
+        if (!saved || !Array.isArray(saved.entries)) return;
+        let applied = 0;
+        for (const [begin, text, out] of saved.entries) {
+          const cue = cues.get(`${begin}|${text}`);
+          if (cue && !cue.out) {
+            cue.out = out;
+            applied++;
+          }
         }
-      }
-      if (applied) log(`restored ${applied} saved translations`);
-    });
+        if (applied) log(`restored ${applied} saved translations`);
+      });
+    } catch {
+      // extension reloaded out from under us — orphaned script, no storage
+    }
   }
 
   function scheduleSave() {
@@ -309,11 +313,15 @@
     saveTimer = setTimeout(() => {
       if (!trackKey || !chrome.storage) return;
       const entries = cueList.filter((c) => c.out).map((c) => [c.begin, c.text, c.out]);
-      chrome.storage.local.set({ [trackKey]: { savedAt: Date.now(), entries } });
+      try {
+        chrome.storage.local.set({ [trackKey]: { savedAt: Date.now(), entries } });
+      } catch {
+        // extension reloaded out from under us — translations stay in memory
+      }
     }, 3000);
   }
 
-  if (chrome.storage) {
+  try {
     chrome.storage.local.get(null, (items) => {
       const stale = Object.keys(items).filter(
         (k) =>
@@ -322,6 +330,8 @@
       );
       if (stale.length) chrome.storage.local.remove(stale);
     });
+  } catch {
+    // extension reloaded out from under us
   }
 
   // ---- Prefetch playback: paint cues on the video clock, translate ahead ----
