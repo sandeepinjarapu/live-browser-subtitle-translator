@@ -592,10 +592,16 @@
   let syncSamples = [];
   let everCalibrated = false; // distinguishes CC-off cold start from post-jump gaps
 
+  let lastCalibText = "";
+
   function calibrateSync(text) {
     const video = activeVideo();
     if (!video || !video.currentTime) return;
     const normalized = text.replace(/\s+/g, " ").trim();
+    // Sample each caption once, at first sighting: that instant corresponds
+    // to cue.begin. Re-sampling while it lingers biases the offset negative.
+    if (normalized === lastCalibText) return;
+    lastCalibText = normalized;
     if (normalized.length < 12) return; // short lines repeat — unsafe anchors
     let best = null;
     for (const cue of cueList) {
