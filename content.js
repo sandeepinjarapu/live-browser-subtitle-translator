@@ -263,6 +263,57 @@
     return added;
   }
 
+  // YouTube timedtext json3: events carry tStartMs/dDurationMs and segs
+  // (word-level for auto-captions; aAppend events are rolling continuations
+  // of the previous line, not new cues).
+  function parseYtJsonCues(body) {
+    let data;
+    try {
+      data = JSON.parse(body);
+    } catch {
+      return 0;
+    }
+    if (!Array.isArray(data.events)) return 0;
+    let added = 0;
+    for (const ev of data.events) {
+      if (!Array.isArray(ev.segs) || ev.aAppend || typeof ev.tStartMs !== "number") continue;
+      const text = ev.segs.map((s) => s.utf8 || "").join("").replace(/\s+/g, " ").trim();
+      if (!text) continue;
+      const begin = ev.tStartMs / 1000;
+      const end = ev.dDurationMs ? (ev.tStartMs + ev.dDurationMs) / 1000 : NaN;
+      const key = `${begin}|${text}`;
+      if (!cues.has(key)) {
+        cues.set(key, { begin, end, text });
+        added++;
+      }
+    }
+    return added;
+  }
+
+  // YouTube legacy XML: <text start="1.2" dur="3.4">line</text>
+  function parseTimedtextCues(body) {
+    const doc = new DOMParser().parseFromString(body, "text/xml");
+    let added = 0;
+    for (const node of doc.getElementsByTagName("text")) {
+      const begin = parseFloat(node.getAttribute("start"));
+      const dur = parseFloat(node.getAttribute("dur"));
+      const text = (node.textContent || "").replace(/\s+/g, " ").trim();
+      if (!text || isNaN(begin)) continue;
+      const key = `${begin}|${text}`;
+      if (!cues.has(key)) {
+        cues.set(key, { begin, end: isNaN(dur) ? NaN : begin + dur, text });
+        added++;
+      }
+    }
+    return added;
+  }
+
+  function parseTrack(body, kind) {
+    if (kind === "yt-json") return parseYtJsonCues(body);
+    if (kind === "timedtext-xml") return parseTimedtextCues(body);
+    return parseTtmlCues(body);
+  }
+
   window.addEventListener("message", (event) => {
     if (event.source !== window || !event.data) return;
     if (event.data.source === "lst-track-candidate") return;
@@ -271,10 +322,15 @@
     if (typeof body !== "string" || !url) return; // foreign window message
     if (state.tracks.some((t) => t.url === url && t.size === body.length)) return;
     state.tracks.push({ url, contentType, kind, size: body.length, at: Date.now() });
-    const added = parseTtmlCues(body);
+    const added = parseTrack(body, kind);
     rebuildCueList();
     if (!trackKey) trackKey = trackStorageKey(url);
     if (added) loadSavedTranslations();
+    // timedtext responses are complete files — no 100-cue threshold needed
+    // (short videos have few cues), just enough to be a real track.
+    if ((kind === "yt-json" || kind === "timedtext-xml") && cues.size >= 10) {
+      enablePrefetch(kind);
+    }
     if (prefetchOn && lexiconState === "idle") buildLexicon();
     const times = [...cues.values()].map((c) => c.begin);
     log(
@@ -514,12 +570,25 @@
     }
   }
 
+  function enablePrefetch(why) {
+    if (prefetchOn) return;
+    prefetchOn = true;
+    log(`prefetch mode ON: ${cueList.length} cues (${why})`);
+  }
+
   function rebuildCueList() {
     cueList = [...cues.values()].sort((a, b) => a.begin - b.begin);
-    if (!prefetchOn && cueList.length >= 100) {
-      prefetchOn = true;
-      log(`prefetch mode ON: ${cueList.length} cues`);
-    }
+    if (cueList.length >= 100) enablePrefetch("full track");
+  }
+
+  // The cue clock is usable once calibrated against the player's captions,
+  // or immediately on sites whose track timestamps share the video timeline.
+  function cueClockUsable() {
+    return syncSamples.length > 0 || !!(siteAdapter && siteAdapter.trustCueClock);
+  }
+
+  function adPlaying() {
+    return !!(siteAdapter && siteAdapter.adActive && siteAdapter.adActive());
   }
 
   function cueEnd(cue) {
@@ -606,7 +675,15 @@
     }
     lastTickTime = video.currentTime;
     lastTickAt = now;
-    if (!syncSamples.length) {
+    if (adPlaying()) {
+      // Same <video>, ad's own currentTime — episode cues must not paint.
+      if (lastCueKey) {
+        lastCueKey = "";
+        show("");
+      }
+      return;
+    }
+    if (!cueClockUsable()) {
       pumpPrefetch(video.currentTime + syncOffset);
       return; // display stays with the live path until calibrated
     }
@@ -1122,7 +1199,8 @@
 
   function captionsWereDue(video, silentMs) {
     if (!prefetchOn || !cueList.length) return true;
-    if (syncSamples.length) {
+    if (adPlaying()) return false; // ads have no captions; clock is the ad's
+    if (cueClockUsable()) {
       const to = video.currentTime + syncOffset;
       return scheduledCueSeconds(to - silentMs / 1000, to) >= 5;
     }
@@ -1234,6 +1312,13 @@
       // Mirror YouTube's own caption model: lines scroll up as they complete;
       // translate whole committed lines and let the previous one linger.
       rolling: true,
+      // timedtext timestamps sit directly on the video timeline, so the cue
+      // clock is valid at offset 0 without DOM calibration (auto-captions'
+      // rolling DOM text never exactly matches a cue, so it can't calibrate).
+      trustCueClock: true,
+      // Ads play in the same <video> with their own currentTime — a trusted
+      // cue clock would paint episode lines over them.
+      adActive: () => !!document.querySelector(".ad-showing, .ad-interrupting"),
     },
     {
       hosts: ["primevideo.com", "amazon.com", "amazon.in"],
@@ -1779,7 +1864,7 @@
       }
       // Uncalibrated cue clock would paint out of sync — let the live path
       // keep driving until the first DOM/cue match lands.
-      if (syncSamples.length) return;
+      if (cueClockUsable()) return;
     }
     if (siteAdapter && siteAdapter.rolling) {
       readRolling(text);

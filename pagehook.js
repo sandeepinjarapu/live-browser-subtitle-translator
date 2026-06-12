@@ -14,9 +14,14 @@
   var SKIP_TYPE_RE = /^(audio|image|font)\//i;
   var MAX_BODY = 8 * 1024 * 1024;
 
-  // "vtt" / "ttml-text" (plain file) / "ttml-mp4" (XML inside mdat boxes)
+  // "vtt" / "ttml-text" (plain file) / "ttml-mp4" (XML inside mdat boxes) /
+  // "yt-json" (YouTube timedtext json3) / "timedtext-xml" (YouTube legacy)
   function trackKind(body) {
     if (/^WEBVTT/.test(body.slice(0, 200))) return "vtt";
+    if (body.indexOf("<timedtext") !== -1) return "timedtext-xml";
+    if (/^\s*\{/.test(body) && body.indexOf('"events"') !== -1 && body.indexOf('"segs"') !== -1) {
+      return "yt-json";
+    }
     if (body.indexOf("<tt") === -1 || body.indexOf("ttml") === -1) return "";
     return body.indexOf("mdat") !== -1 || body.indexOf("moof") !== -1 ? "ttml-mp4" : "ttml-text";
   }
