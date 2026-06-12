@@ -6,10 +6,10 @@
   if (window.__subtitleTrackHook) return;
   window.__subtitleTrackHook = true;
 
-  // URL/content-type gate decides whether we read a body at all; the body
-  // sniff makes the final call, so the gate can afford to be generous.
+  // Prime serves tracks from bare-UUID URLs with generic content types, so
+  // URL/type can only *exclude* (obvious media); the body sniff decides.
   var URL_RE = /ttml|dfxp|timedtext|imsc|\.vtt|\.srt|\.xml|caption|subtitle/i;
-  var TYPE_RE = /ttml|vtt|subrip|dfxp|xml/i;
+  var SKIP_TYPE_RE = /^(video|audio|image|font)\//i;
   var MAX_BODY = 4 * 1024 * 1024;
 
   function looksLikeTrack(body) {
@@ -44,7 +44,7 @@
       p.then(function (res) {
         var type = res.headers.get("content-type") || "";
         candidate(res.url || url, type, "fetch");
-        if (!URL_RE.test(url) && !TYPE_RE.test(type)) return;
+        if (SKIP_TYPE_RE.test(type)) return;
         res
           .clone()
           .text()
@@ -73,7 +73,7 @@
         var url = xhr.responseURL || xhr.__lstUrl || "";
         var type = xhr.getResponseHeader("content-type") || "";
         candidate(url, type, "xhr:" + (xhr.responseType || "text"));
-        if (!URL_RE.test(url) && !TYPE_RE.test(type)) return;
+        if (SKIP_TYPE_RE.test(type)) return;
         if (xhr.responseType === "" || xhr.responseType === "text") {
           report(url, type, xhr.responseText);
         } else if (xhr.responseType === "arraybuffer" && xhr.response) {
