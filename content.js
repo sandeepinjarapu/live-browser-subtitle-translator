@@ -182,6 +182,7 @@
   hideCss.textContent = [
     ".shaka-text-container,",
     ".vjs-text-track-display,",
+    ".text-track-wrapper,",
     ".atvwebplayersdk-captions-text,",
     ".ytp-caption-window-container,",
     ".player-timedtext,",
@@ -1431,6 +1432,7 @@
     const selectors = [
       ".shaka-text-container",
       ".vjs-text-track-display",
+      ".text-track-wrapper",
       ".ytp-caption-window-container",
       ".atvwebplayersdk-caption",
       ".atvwebplayersdk-captions-container",
@@ -1516,7 +1518,7 @@
     for (const el of roots) {
       const text = (el.innerText || "").trim();
       const score =
-        (/caption|shaka-text|timedtext|vjs-text-track/i.test(el.className || "") ? 10 : 0) +
+        (/caption|shaka-text|timedtext|text-track/i.test(el.className || "") ? 10 : 0) +
         (text.length > 0 ? 5 : 0) +
         (el.querySelectorAll("*").length > 0 ? 2 : 0) +
         (el.getBoundingClientRect().top > window.innerHeight * 0.4 ? 2 : 0);
@@ -1525,7 +1527,7 @@
         best = el;
       }
     }
-    const CAPTION_CLASS_RE = /caption|shaka-text|timedtext|vjs-text-track/i;
+    const CAPTION_CLASS_RE = /caption|shaka-text|timedtext|text-track/i;
     const current =
       state.subtitleRoot && document.contains(state.subtitleRoot) ? state.subtitleRoot : null;
     // A root discovered by cue-text match is verified ground truth — keep it
@@ -1993,7 +1995,7 @@
           findSmallestMatchingDescendant(state.subtitleRoot, text) ||
           findSubtitleNode(state.subtitleRoot, text);
         const container =
-          node && node.closest('.shaka-text-container, .vjs-text-track-display, [class*="caption" i]');
+          node && node.closest('.shaka-text-container, .vjs-text-track-display, .text-track-wrapper, [class*="caption" i]');
         if (container) hideNode(container);
       }
       // Uncalibrated cue clock would paint out of sync — let the live path
@@ -2142,7 +2144,7 @@
         // Hide the caption container, not the matched leaf: players recreate
         // text spans per cue (fresh spans show through), and the matched node
         // often carries only a hashed class (Prime), so leaf-level rules miss.
-        const captionContainer = subtitleNode.closest('.shaka-text-container, .vjs-text-track-display, [class*="caption" i]');
+        const captionContainer = subtitleNode.closest('.shaka-text-container, .vjs-text-track-display, .text-track-wrapper, [class*="caption" i]');
         if (captionContainer && !state.showOriginal) {
           hideNode(captionContainer);
         }
