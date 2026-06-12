@@ -950,11 +950,16 @@
   // Anchor the overlay to the video's rectangle, not the viewport: in
   // windowed layouts a viewport-bottom overlay sits on the player controls.
   function positionOverlay() {
-    // activeVideo, not querySelector: in prefetch mode state.video is never
-    // bound, and Prime keeps dummy <video> elements with useless rects.
-    const video = state.video || activeVideo();
+    // Prefer the video that is actually playing: state.video is just "first
+    // <video> in the DOM" (watchVideoSeeks), which on some sites (MX) is a
+    // hero/preview clip at the top of the page, not the player.
+    const vids = [...document.querySelectorAll("video")];
+    const playing = vids.find((v) => !v.paused && !v.ended && v.currentTime > 0);
+    const video = playing || state.video || vids[0] || null;
     const rect = video ? video.getBoundingClientRect() : null;
-    if (!rect || !rect.height) {
+    // Degenerate or off-screen rects (dummy <video>s, scrolled-away players)
+    // would fling the overlay off the viewport — use the default spot.
+    if (!rect || rect.height < 80 || rect.bottom < 120 || rect.top > window.innerHeight) {
       box.style.left = "50%";
       box.style.bottom = "7%";
       return;
@@ -962,7 +967,9 @@
     box.style.left = `${rect.left + rect.width / 2}px`;
     // 7% of video height matches the original fullscreen position; the 64px
     // floor keeps the overlay above player controls in small windowed layouts.
-    box.style.bottom = `${Math.max(0, window.innerHeight - rect.bottom) + Math.max(rect.height * 0.07, 64)}px`;
+    // Clamp so the overlay always stays on screen.
+    const bottom = Math.max(0, window.innerHeight - rect.bottom) + Math.max(rect.height * 0.07, 64);
+    box.style.bottom = `${Math.min(bottom, window.innerHeight - 80)}px`;
   }
 
   // A shown translation stays up at least this long before a NEW line may
