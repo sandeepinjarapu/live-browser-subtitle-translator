@@ -249,6 +249,7 @@
     if (event.data.source === "lst-track-candidate") return;
     if (event.data.source !== "lst-track") return;
     const { url, contentType, kind, body } = event.data;
+    if (typeof body !== "string" || !url) return; // foreign window message
     if (state.tracks.some((t) => t.url === url && t.size === body.length)) return;
     state.tracks.push({ url, contentType, kind, size: body.length, at: Date.now() });
     const added = parseTtmlCues(body);
