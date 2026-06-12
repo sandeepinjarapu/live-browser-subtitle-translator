@@ -315,6 +315,15 @@
   // WebVTT (Shaka/HLS players, often as many small segment files — cues
   // accumulate across captures). Constant timestamp offsets from HLS
   // timestamp maps are absorbed by the DOM calibration like any other.
+  // VTT text carries HTML entities (&nbsp; &amp; …) — decode via a detached
+  // textarea so they never reach the model or the overlay verbatim.
+  const entityDecoder = document.createElement("textarea");
+  function decodeEntities(text) {
+    if (text.indexOf("&") === -1) return text;
+    entityDecoder.innerHTML = text;
+    return entityDecoder.value;
+  }
+
   function parseVttClock(value) {
     const m = (value || "").trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{2}(?:\.\d+)?)$/);
     if (!m) return NaN;
@@ -332,7 +341,9 @@
       const end = parseVttClock((rawEnd || "").trim().split(/\s+/)[0]);
       const text = lines
         .slice(timeIdx + 1)
-        .map((l) => l.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim())
+        .map((l) =>
+          decodeEntities(l.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim()
+        )
         .filter(Boolean)
         .join("\n");
       if (!text || isNaN(begin)) continue;

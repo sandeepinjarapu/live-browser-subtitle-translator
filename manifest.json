@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Live Subtitle Translator",
-  "version": "0.5.24",
+  "version": "0.5.25",
   "description": "Translates streaming subtitles in real time using local, private AI models. Works on Prime Video and JioHotstar out of the box; try it on any site from the toolbar.",
   "permissions": ["storage", "scripting", "activeTab"],
   "optional_host_permissions": ["https://*/*", "http://*/*"],
