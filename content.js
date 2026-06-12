@@ -388,7 +388,30 @@
     return current;
   }
 
+  // Prime is an SPA: title changes (and next-episode autoplay) swap content
+  // without a page load, so per-episode prefetch state must be torn down or
+  // the old show's cues keep painting over the new one.
+  let prefetchHref = location.href;
+
+  function resetPrefetch(reason) {
+    prefetchHref = location.href;
+    if (!cueList.length && !state.tracks.length) return;
+    cues.clear();
+    cueList = [];
+    state.tracks = [];
+    fullFetchRequested.clear();
+    prefetchOn = false;
+    pumpDone = 0;
+    trackKey = "";
+    syncOffset = 0;
+    syncSamples = [];
+    lastCueKey = "~init";
+    show("");
+    log("prefetch reset:", reason);
+  }
+
   setInterval(() => {
+    if (location.href !== prefetchHref) resetPrefetch("navigation");
     if (!prefetchOn || !state.enabled || musicMode()) return;
     const video = activeVideo();
     if (!video) return;
