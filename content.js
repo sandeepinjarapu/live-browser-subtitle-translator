@@ -410,6 +410,62 @@
     }
   }
 
+  // ---- Channel probe ----
+  // A page can carry subtitles through four channels: native TextTracks,
+  // rendered DOM, network track files, or burned into pixels (unreadable).
+  // Log an inventory of the first three so every field test reports what a
+  // site offers — not just what broke. See ASSUMPTIONS.md. Re-logs only on
+  // change; stops once the verdict has been stable for a while.
+  let lastProbeReport = "";
+  let probeStableTicks = 0;
+
+  function probeChannels() {
+    if (probeStableTicks >= 8) return; // verdict settled — stop logging
+    const video = activeVideo();
+    const native = [];
+    if (video && video.textTracks) {
+      for (const t of video.textTracks) {
+        native.push(
+          `${t.kind}/${t.label || t.language || "?"}:${t.mode}` +
+            (t.cues ? `:${t.cues.length}cues` : "")
+        );
+      }
+    }
+    const root = state.subtitleRoot;
+    const rootClass = root
+      ? String(root.className || root.id || root.tagName).trim().slice(0, 60)
+      : "";
+    const rootText = root ? (root.innerText || "").trim() : "";
+    const netKinds = [...new Set(state.tracks.map((t) => t.kind))].join(",");
+    const verdict = prefetchOn
+      ? "prefetch tier"
+      : cueList.length
+        ? `track held (${cueList.length} cues) but prefetch off — segmented delivery?`
+        : rootText
+          ? "live path (DOM only)"
+          : native.length
+            ? "native tracks present, none enabled/populated"
+            : video
+              ? "no channel found — CC off, or burned-in subtitles?"
+              : "no video yet";
+    const langNote =
+      rootText && !isTranslatableEnglish(rootText)
+        ? " | WARNING: root text not Latin — non-English source? pipeline assumes English"
+        : "";
+    const report =
+      `native[${native.join(" ") || "none"}]` +
+      ` dom[${rootClass || "none"}]` +
+      ` net[${netKinds || "none"}]` +
+      ` → ${verdict}${langNote}`;
+    if (report === lastProbeReport) {
+      probeStableTicks++;
+      return;
+    }
+    lastProbeReport = report;
+    probeStableTicks = 0;
+    log("channel probe:", report);
+  }
+
   function parseTrack(body, kind) {
     if (kind === "yt-json") return parseYtJsonCues(body);
     if (kind === "timedtext-xml") return parseTimedtextCues(body);
@@ -751,6 +807,8 @@
     trackKey = "";
     nativeHarvestGen++;
     nativeClock = false;
+    lastProbeReport = "";
+    probeStableTicks = 0;
     syncOffset = 0;
     syncSamples = [];
     everCalibrated = false;
@@ -2312,6 +2370,7 @@
 
   loadSettings();
   watchVideoSeeks();
+  setInterval(probeChannels, 10000);
   setInterval(() => {
     watchVideoSeeks();
     harvestNativeTracks();
