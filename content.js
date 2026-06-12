@@ -1492,6 +1492,8 @@
     /^[0-9]{1,2}:[0-9]{2}\s*\/\s*[0-9]{1,2}:[0-9]{2}$/,
     /next episode/i,
     /^[\d:.\s\/\-]+$/,
+    // Track-selection toasts ("subtitle stream_0, selected", "audio stream 1")
+    /^(subtitle|audio)?\s*stream[_\s]?\d+\b/i,
   ];
 
   function noisePatterns() {
