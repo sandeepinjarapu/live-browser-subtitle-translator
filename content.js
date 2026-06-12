@@ -917,6 +917,22 @@
     return vids.find((v) => !v.paused && !v.ended && v.currentTime > 0) || vids[0] || null;
   }
 
+  // In prefetch mode the cue list says whether captions were even due in the
+  // silent window (≥5s of scheduled cue time = the player should have shown
+  // something). Without prefetch, assume they were — the old heuristic.
+  function captionsWereDue(video, silentMs) {
+    if (!prefetchOn || !cueList.length) return true;
+    const to = video.currentTime + syncOffset;
+    const from = to - silentMs / 1000;
+    let due = 0;
+    for (const cue of cueList) {
+      if (cue.begin > to) break;
+      const overlap = Math.min(cueEnd(cue), to) - Math.max(cue.begin, from);
+      if (overlap > 0) due += overlap;
+    }
+    return due >= 5;
+  }
+
   function updateCaptionHint() {
     const prevHint = state.captionHint;
     state.captionHint = "";
@@ -944,7 +960,11 @@
         show("");
       }
     } else if (Date.now() - state.lastCaptionTextAt > 20000) {
-      state.captionHint = "no subtitles found — is CC on?";
+      // With the full track in hand, a silent stretch is only suspicious if
+      // cues were actually scheduled during it; a long wordless scene is not.
+      if (captionsWereDue(video, Date.now() - state.lastCaptionTextAt)) {
+        state.captionHint = "no subtitles found — is CC on?";
+      }
     }
     if (state.captionHint) {
       statusBadge.textContent = `Translator: ${state.captionHint}`;
