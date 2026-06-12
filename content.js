@@ -43,6 +43,7 @@
     targetLanguage: "Telugu",
     video: null,
     settingsOpen: false,
+    tracks: [], // subtitle track files captured by pagehook.js (prefetch probe)
   };
 
   const box = document.createElement("div");
@@ -205,10 +206,629 @@
     console.log("[Prime Subtitle Light]", ...args);
   }
 
+  // Prefetch: pagehook.js (MAIN world) forwards subtitle-track responses it
+  // spots in the player's own network traffic. Each capture is parsed into
+  // timed cues; the first segment also triggers a full-file re-fetch (the
+  // player pulls the track in Range windows, plain GET returns all of it).
+  const cues = new Map(); // "begin|text" -> { begin, end, text }
+  const fullFetchRequested = new Set();
+
+  function parseClock(value, tickRate) {
+    if (!value) return NaN;
+    if (/t$/.test(value)) return parseFloat(value) / (tickRate || 10000000);
+    if (/(ms|s)$/.test(value)) return /ms$/.test(value) ? parseFloat(value) / 1000 : parseFloat(value);
+    const parts = value.split(":");
+    if (parts.length === 3) return +parts[0] * 3600 + +parts[1] * 60 + parseFloat(parts[2]);
+    return NaN;
+  }
+
+  // <br/> inside a cue separates speaker turns — flattening them into one
+  // line loses who-said-what. Preserved as "\n" through translation/render.
+  function cueText(p) {
+    let out = "";
+    const walk = (node) => {
+      for (const child of node.childNodes) {
+        if (child.nodeType === 3) out += child.nodeValue;
+        else if (child.nodeName.toLowerCase().endsWith("br")) out += "\n";
+        else walk(child);
+      }
+    };
+    walk(p);
+    return out
+      .split("\n")
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  function parseTtmlCues(body) {
+    // fMP4 bodies hold one or more <tt> documents inside mdat boxes; a
+    // plain-text track is a single document. The regex handles both.
+    const docs = body.match(/<tt[\s>][\s\S]*?<\/tt>/g) || [];
+    let added = 0;
+    for (const docText of docs) {
+      const doc = new DOMParser().parseFromString(docText, "text/xml");
+      const tt = doc.documentElement;
+      const tickRate = Number(tt.getAttribute("ttp:tickRate")) || 0;
+      for (const p of doc.getElementsByTagName("p")) {
+        const begin = parseClock(p.getAttribute("begin"), tickRate);
+        const text = cueText(p);
+        if (!text || isNaN(begin)) continue;
+        const key = `${begin}|${text}`;
+        if (cues.has(key)) continue;
+        cues.set(key, { begin, end: parseClock(p.getAttribute("end"), tickRate), text });
+        added++;
+      }
+    }
+    return added;
+  }
+
+  // YouTube timedtext json3: events carry tStartMs/dDurationMs and segs
+  // (word-level for auto-captions; aAppend events are rolling continuations
+  // of the previous line, not new cues).
+  function parseYtJsonCues(body) {
+    let data;
+    try {
+      data = JSON.parse(body);
+    } catch {
+      return 0;
+    }
+    if (!Array.isArray(data.events)) return 0;
+    let added = 0;
+    for (const ev of data.events) {
+      if (!Array.isArray(ev.segs) || ev.aAppend || typeof ev.tStartMs !== "number") continue;
+      // ASR cues carry stutters and [Music]-style tags — same cleanup the
+      // live path applies.
+      const text = cleanAutoCaption(
+        ev.segs.map((s) => s.utf8 || "").join("").replace(/\s+/g, " ").trim()
+      );
+      if (!text) continue;
+      const begin = ev.tStartMs / 1000;
+      const end = ev.dDurationMs ? (ev.tStartMs + ev.dDurationMs) / 1000 : NaN;
+      const key = `${begin}|${text}`;
+      if (!cues.has(key)) {
+        cues.set(key, { begin, end, text });
+        added++;
+      }
+    }
+    return added;
+  }
+
+  // YouTube legacy XML: <text start="1.2" dur="3.4">line</text>
+  function parseTimedtextCues(body) {
+    const doc = new DOMParser().parseFromString(body, "text/xml");
+    let added = 0;
+    for (const node of doc.getElementsByTagName("text")) {
+      const begin = parseFloat(node.getAttribute("start"));
+      const dur = parseFloat(node.getAttribute("dur"));
+      const text = (node.textContent || "").replace(/\s+/g, " ").trim();
+      if (!text || isNaN(begin)) continue;
+      const key = `${begin}|${text}`;
+      if (!cues.has(key)) {
+        cues.set(key, { begin, end: isNaN(dur) ? NaN : begin + dur, text });
+        added++;
+      }
+    }
+    return added;
+  }
+
+  // WebVTT (Shaka/HLS players, often as many small segment files — cues
+  // accumulate across captures). Constant timestamp offsets from HLS
+  // timestamp maps are absorbed by the DOM calibration like any other.
+  // VTT text carries HTML entities (&nbsp; &amp; …) — decode via a detached
+  // textarea so they never reach the model or the overlay verbatim.
+  const entityDecoder = document.createElement("textarea");
+  function decodeEntities(text) {
+    if (text.indexOf("&") === -1) return text;
+    entityDecoder.innerHTML = text;
+    return entityDecoder.value;
+  }
+
+  function parseVttClock(value) {
+    const m = (value || "").trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{2}(?:\.\d+)?)$/);
+    if (!m) return NaN;
+    return (m[1] ? +m[1] : 0) * 3600 + +m[2] * 60 + parseFloat(m[3]);
+  }
+
+  function parseVttCues(body) {
+    let added = 0;
+    for (const block of body.replace(/\r/g, "").split(/\n\n+/)) {
+      const lines = block.split("\n");
+      const timeIdx = lines.findIndex((l) => l.includes("-->"));
+      if (timeIdx === -1) continue;
+      const [rawBegin, rawEnd] = lines[timeIdx].split("-->");
+      const begin = parseVttClock(rawBegin);
+      const end = parseVttClock((rawEnd || "").trim().split(/\s+/)[0]);
+      const text = lines
+        .slice(timeIdx + 1)
+        .map((l) =>
+          decodeEntities(l.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim()
+        )
+        .filter(Boolean)
+        .join("\n");
+      if (!text || isNaN(begin)) continue;
+      const key = `${begin}|${text}`;
+      if (!cues.has(key)) {
+        cues.set(key, { begin, end, text });
+        added++;
+      }
+    }
+    return added;
+  }
+
+  function parseTrack(body, kind) {
+    if (kind === "yt-json") return parseYtJsonCues(body);
+    if (kind === "timedtext-xml") return parseTimedtextCues(body);
+    if (kind === "vtt") return parseVttCues(body);
+    return parseTtmlCues(body);
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || !event.data) return;
+    if (event.data.source === "lst-track-candidate") return;
+    if (event.data.source !== "lst-track") return;
+    const { url, contentType, kind, body } = event.data;
+    if (typeof body !== "string" || !url) return; // foreign window message
+    if (state.tracks.some((t) => t.url === url && t.size === body.length)) return;
+    state.tracks.push({ url, contentType, kind, size: body.length, at: Date.now() });
+    const added = parseTrack(body, kind);
+    rebuildCueList();
+    if (!trackKey) trackKey = trackStorageKey(url);
+    if (added) loadSavedTranslations();
+    // timedtext responses are complete files — no 100-cue threshold needed
+    // (short videos have few cues), just enough to be a real track.
+    if ((kind === "yt-json" || kind === "timedtext-xml") && cues.size >= 10) {
+      enablePrefetch(kind);
+    }
+    if (prefetchOn && lexiconState === "idle") buildLexicon();
+    const times = [...cues.values()].map((c) => c.begin);
+    log(
+      `track captured (#${state.tracks.length}, ${kind}, ${body.length} chars):`,
+      `+${added} cues, total ${cues.size},`,
+      times.length
+        ? `coverage ${Math.min(...times).toFixed(1)}s – ${Math.max(...times).toFixed(1)}s`
+        : "no cues"
+    );
+    if (kind === "ttml-mp4" && !fullFetchRequested.has(url)) {
+      fullFetchRequested.add(url);
+      log("requesting full track:", url);
+      window.postMessage({ source: "lst-fetch-track", url }, "*");
+    }
+  });
+
+  // Persist per-track translations so a reload or same-day rewatch skips the
+  // model entirely. Keyed by URL path (the query carries expiring signature
+  // params) + language + model; restored cues match on begin-time + source
+  // text. Day-old tracks are pruned — beyond that, a re-run is cheap.
+  let trackKey = "";
+  let saveTimer = null;
+
+  function trackStorageKey(url) {
+    try {
+      const u = new URL(url);
+      return `lst-track:${u.origin}${u.pathname}:${state.targetLanguage}:${state.gemmaModel}`;
+    } catch {
+      return "";
+    }
+  }
+
+  function loadSavedTranslations() {
+    if (!trackKey || !chrome.storage) return;
+    try {
+      chrome.storage.local.get(trackKey, (items) => {
+        const saved = items && items[trackKey];
+        if (!saved || !Array.isArray(saved.entries)) return;
+        let applied = 0;
+        for (const [begin, text, out] of saved.entries) {
+          const cue = cues.get(`${begin}|${text}`);
+          if (cue && !cue.out) {
+            cue.out = out;
+            applied++;
+          }
+        }
+        if (applied) log(`restored ${applied} saved translations`);
+      });
+    } catch {
+      // extension reloaded out from under us — orphaned script, no storage
+    }
+  }
+
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (!trackKey || !chrome.storage) return;
+      const entries = cueList.filter((c) => c.out).map((c) => [c.begin, c.text, c.out]);
+      try {
+        chrome.storage.local.set({ [trackKey]: { savedAt: Date.now(), entries } });
+      } catch {
+        // extension reloaded out from under us — translations stay in memory
+      }
+    }, 3000);
+  }
+
+  try {
+    chrome.storage.local.get(null, (items) => {
+      const stale = Object.keys(items).filter(
+        (k) =>
+          k.startsWith("lst-track:") &&
+          Date.now() - ((items[k] && items[k].savedAt) || 0) > 24 * 3600 * 1000
+      );
+      if (stale.length) chrome.storage.local.remove(stale);
+    });
+  } catch {
+    // extension reloaded out from under us
+  }
+
+  // ---- Episode lexicon: one pre-pass call when the full track lands ----
+  // Holding the whole script lets the model make episode-level judgments
+  // once instead of guessing per line: which English terms stay English in
+  // the target language (code-mixing), and one committed transliteration
+  // per recurring name so every cue prompt carries the same spellings.
+  let lexicon = null; // { keepEnglish: [...], names: { src: target } }
+  let lexiconStamp = 0; // participates in the gemma cache key
+  let lexiconState = "idle"; // idle | pending | done
+
+  async function gemmaOnce(prompt, numPredict) {
+    const response = await bgFetch("http://127.0.0.1:11434/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: state.gemmaModel,
+        think: false,
+        prompt,
+        stream: false,
+        keep_alive: "30m",
+        options: { temperature: 0, num_predict: numPredict },
+      }),
+    });
+    if (!response.ok) throw new Error(`ollama ${response.status}`);
+    const data = JSON.parse(response.body);
+    return (data && data.response) || "";
+  }
+
+  function candidateNames() {
+    const counts = new Map();
+    for (const cue of cueList) {
+      for (const match of cue.text.matchAll(/\b([A-Z][a-z]{2,}|[A-Z]{2,5})\b/g)) {
+        const word = match[1];
+        if (NAME_STOPWORDS.has(word)) continue;
+        counts.set(word, (counts.get(word) || 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .filter(([, n]) => n >= 2)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([w]) => w);
+  }
+
+  function adoptLexicon(value, origin) {
+    lexicon = {
+      keepEnglish: Array.isArray(value.keepEnglish) ? value.keepEnglish.slice(0, 16) : [],
+      names: value.names && typeof value.names === "object" ? value.names : {},
+    };
+    lexiconStamp++;
+    log(
+      `lexicon ${origin}: keep-English [${lexicon.keepEnglish.join(", ")}],`,
+      `names ${Object.entries(lexicon.names).map(([k, v]) => `${k}=${v}`).join(", ") || "(none)"}`
+    );
+  }
+
+  function buildLexicon() {
+    if (lexiconState !== "idle") return;
+    if (state.translatorBackend === "libre") {
+      lexiconState = "done"; // libre takes no prompts — nothing to inject
+      return;
+    }
+    lexiconState = "pending";
+    const lexKey = trackKey ? `${trackKey}:lex` : "";
+    const generate = () => {
+      const lines = cueList
+        .map((c) => c.text.replace(/\n/g, " "))
+        .filter((t) => isTranslatableEnglish(t));
+      const step = Math.max(1, Math.floor(lines.length / 60));
+      const sample = lines.filter((_, i) => i % step === 0).slice(0, 60);
+      const names = candidateNames();
+      const prompt = [
+        `You are preparing to subtitle a show into ${state.targetLanguage}. ${state.targetLanguage} subtitles keep certain English terms untranslated (institutions, acronyms, exams, technical and modern terms).`,
+        `From the sample lines and candidate names below, reply with ONLY JSON in this exact shape, no commentary:`,
+        `{"keepEnglish": ["term", ...], "names": {"CandidateName": "${state.targetLanguage} transliteration", ...}}`,
+        names.length ? `Candidate names: ${names.join(", ")}` : "",
+        "Sample lines:",
+        ...sample,
+      ].filter(Boolean).join("\n");
+      gemmaOnce(prompt, 512)
+        .then((raw) => {
+          const jsonText = raw.replace(/^[\s\S]*?{/, "{").replace(/}[^}]*$/, "}");
+          adoptLexicon(JSON.parse(jsonText), "built");
+          if (lexKey) {
+            try {
+              chrome.storage.local.set({ [lexKey]: { savedAt: Date.now(), ...lexicon } });
+            } catch {
+              // extension reloaded out from under us
+            }
+          }
+        })
+        .catch((error) => log("lexiconError", String(error)))
+        .then(() => {
+          lexiconState = "done"; // failed pre-pass must not hold the pump
+        });
+    };
+    if (!lexKey) {
+      generate();
+      return;
+    }
+    try {
+      chrome.storage.local.get(lexKey, (items) => {
+        const saved = items && items[lexKey];
+        if (saved) {
+          adoptLexicon(saved, "restored");
+          lexiconState = "done";
+        } else {
+          generate();
+        }
+      });
+    } catch {
+      generate();
+    }
+  }
+
+  // ---- Prefetch playback: paint cues on the video clock, translate ahead ----
+  // With the full track in hand, display needs no DOM timing at all: an
+  // interval matches cues against video.currentTime (zero perceived lag) and
+  // a sequential pump translates forward from the playhead, so seeks just
+  // change where the pump resumes. Threshold 100 cues = clearly a full
+  // track, not the player's small Range windows.
+  let cueList = [];
+  let prefetchOn = false;
+  let pumpDone = 0;
+  let lastCueKey = "~init"; // not "" so the first tick always paints/clears
+
+  // Cue timestamps live on the track's media timeline, which can sit at a
+  // fixed offset from video.currentTime (DASH period anchoring). Calibrate
+  // by matching the player's own DOM caption text to a cue and comparing
+  // clocks; until the first sample lands, the live DOM path keeps driving.
+  let syncOffset = 0;
+  let syncSamples = [];
+  let everCalibrated = false; // distinguishes CC-off cold start from post-jump gaps
+
+  let lastCalibText = "";
+
+  function calibrateSync(text) {
+    const video = activeVideo();
+    if (!video || !video.currentTime) return;
+    const normalized = text.replace(/\s+/g, " ").trim();
+    // Sample each caption once, at first sighting: that instant corresponds
+    // to cue.begin. Re-sampling while it lingers biases the offset negative.
+    if (normalized === lastCalibText) return;
+    lastCalibText = normalized;
+    if (normalized.length < 12) return; // short lines repeat — unsafe anchors
+    let best = null;
+    for (const cue of cueList) {
+      if (cue.text.replace(/\n/g, " ") !== normalized) continue;
+      if (!best || Math.abs(cue.begin - video.currentTime) < Math.abs(best.begin - video.currentTime)) {
+        best = cue;
+      }
+    }
+    if (!best) return;
+    const sample = best.begin - video.currentTime;
+    if (Math.abs(sample) > 120) return; // repeated line far away — ambiguous
+    syncSamples.push(sample);
+    everCalibrated = true;
+    if (syncSamples.length > 5) syncSamples.shift();
+    const sorted = [...syncSamples].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    if (Math.abs(median - syncOffset) > 0.25) {
+      syncOffset = median;
+      log(`cue clock offset: ${syncOffset.toFixed(2)}s`);
+    }
+  }
+
+  function enablePrefetch(why) {
+    if (prefetchOn) return;
+    prefetchOn = true;
+    log(`prefetch mode ON: ${cueList.length} cues (${why})`);
+  }
+
+  function rebuildCueList() {
+    cueList = [...cues.values()].sort((a, b) => a.begin - b.begin);
+    if (cueList.length >= 100) enablePrefetch("full track");
+  }
+
+  // The cue clock is usable once calibrated against the player's captions,
+  // or immediately on sites whose track timestamps share the video timeline.
+  function cueClockUsable() {
+    return syncSamples.length > 0 || !!(siteAdapter && siteAdapter.trustCueClock);
+  }
+
+  function adPlaying() {
+    return !!(siteAdapter && siteAdapter.adActive && siteAdapter.adActive());
+  }
+
+  function cueEnd(cue) {
+    return isNaN(cue.end) ? cue.begin + 6 : cue.end;
+  }
+
+  function activeCue(t) {
+    let current = null;
+    for (const cue of cueList) {
+      if (cue.begin > t) break;
+      if (t <= cueEnd(cue) + 0.3) current = cue;
+    }
+    return current;
+  }
+
+  // Settings that change translation output (backend, model, language,
+  // style) invalidate already-translated cues — without this the pump's
+  // earlier output keeps painting in the old language/model. Re-keys the
+  // disk cache too, so a previously saved run under the new settings restores.
+  function flushCueTranslations() {
+    if (!cueList.length && !trackKey) return;
+    for (const c of cueList) {
+      c.out = null;
+      c.tried = 0;
+    }
+    pumpDone = 0;
+    lastCueKey = "~init";
+    trackKey = state.tracks.length ? trackStorageKey(state.tracks[0].url) : "";
+    loadSavedTranslations();
+    // Lexicon depends on language/model — rebuild under the new settings
+    // (the per-track save key follows trackKey, so a saved one restores).
+    lexicon = null;
+    lexiconState = "idle";
+    if (prefetchOn) buildLexicon();
+    log("cue translations flushed (settings change)");
+  }
+
+  // Prime is an SPA: title changes (and next-episode autoplay) swap content
+  // without a page load, so per-episode prefetch state must be torn down or
+  // the old show's cues keep painting over the new one.
+  let prefetchHref = location.href;
+
+  function resetPrefetch(reason) {
+    prefetchHref = location.href;
+    if (!cueList.length && !state.tracks.length) return;
+    cues.clear();
+    cueList = [];
+    state.tracks = [];
+    fullFetchRequested.clear();
+    prefetchOn = false;
+    pumpDone = 0;
+    trackKey = "";
+    syncOffset = 0;
+    syncSamples = [];
+    everCalibrated = false;
+    lastCueKey = "~init";
+    lexicon = null;
+    lexiconState = "idle";
+    show("");
+    log("prefetch reset:", reason);
+  }
+
+  // Seeks, ad breaks, and source swaps jump video.currentTime against the
+  // track clock; a stale offset then paints lines seconds off. Compare
+  // playback advance to wall clock per tick and re-calibrate on any jump.
+  let lastTickTime = 0;
+  let lastTickAt = 0;
+
+  setInterval(() => {
+    if (location.href !== prefetchHref) resetPrefetch("navigation");
+    if (!prefetchOn || !state.enabled || musicMode()) return;
+    const video = activeVideo();
+    if (!video) return;
+    const now = Date.now();
+    if (lastTickAt && syncSamples.length && !video.paused) {
+      const advanced = video.currentTime - lastTickTime;
+      const elapsed = (now - lastTickAt) / 1000;
+      if (Math.abs(advanced - elapsed) > 2) {
+        syncSamples = [];
+        lastCueKey = "~init";
+        show("");
+        log("timeline jump — recalibrating cue clock");
+      }
+    }
+    lastTickTime = video.currentTime;
+    lastTickAt = now;
+    if (adPlaying()) {
+      // Same <video>, ad's own currentTime — episode cues must not paint.
+      if (lastCueKey) {
+        lastCueKey = "";
+        show("");
+      }
+      return;
+    }
+    if (!cueClockUsable()) {
+      pumpPrefetch(video.currentTime + syncOffset);
+      return; // display stays with the live path until calibrated
+    }
+    const cue = activeCue(video.currentTime + syncOffset);
+    const key = cue ? `${cue.begin}|${cue.text}` : "";
+    if (key !== lastCueKey) {
+      lastCueKey = key;
+      // Original English as the stopgap until the translation lands (cold
+      // start or right after a seek); the pump normally stays ahead.
+      show(cue ? cue.out || cue.text : "");
+    } else if (cue && cue.out && box.textContent !== cue.out) {
+      show(cue.out);
+    }
+    pumpPrefetch(video.currentTime + syncOffset);
+  }, 200);
+
+  // First untranslated cue from the playhead forward; if everything ahead is
+  // done, wrap around to the stretch behind it so the whole episode finishes.
+  function nextUntranslated(fromTime) {
+    let wrapIdx = -1;
+    for (let i = 0; i < cueList.length; i++) {
+      const c = cueList[i];
+      if (c.out || c.inFlight || (c.tried || 0) >= 2) continue;
+      if (!isTranslatableEnglish(c.text)) {
+        c.out = c.text;
+        continue;
+      }
+      if (cueEnd(c) >= fromTime - 1) return i;
+      if (wrapIdx === -1) wrapIdx = i;
+    }
+    return wrapIdx;
+  }
+
+  // Two requests in flight: the live path is idle in prefetch mode, so its
+  // Ollama slot (OLLAMA_NUM_PARALLEL=2) is free — halves full-track time
+  // and post-seek catch-up.
+  const PUMP_CONCURRENCY = 2;
+  let pumpActive = 0;
+
+  function pumpPrefetch(t) {
+    // Focused window only: two visible windows would otherwise run two
+    // pumps (4 requests vs OLLAMA_NUM_PARALLEL=2), flooding the queue and
+    // pegging the GPU on both episodes at once. Display keeps painting
+    // already-translated cues; the pump resumes on focus.
+    if (document.hidden || !document.hasFocus()) return;
+    if (lexiconState === "pending") return; // one pre-pass call, then flow
+    while (pumpActive < PUMP_CONCURRENCY) {
+      const idx = nextUntranslated(t);
+      if (idx === -1) return;
+      const next = cueList[idx];
+      next.inFlight = true;
+      pumpActive++;
+      // prevLines is read synchronously when the prompt is built, so setting
+      // it just before each dispatch is safe even with two in flight.
+      state.prevLines = cueList.slice(Math.max(0, idx - 2), idx).map((c) => c.text);
+      const backend = state.translatorBackend === "libre" ? translateWithLibre : translateWithGemma;
+      // Translate speaker turns separately so the rendered split (and leading
+      // dashes) match the original cue.
+      const job = (async () => {
+        const outs = [];
+        for (const part of next.text.split("\n")) {
+          const src = part.replace(/^-\s*/, "");
+          const translated = (await backend(src)) || src;
+          outs.push(part === src ? translated : `- ${translated}`);
+        }
+        return outs.join("\n");
+      })();
+      job
+        .then((translated) => {
+          next.out = translated || next.text;
+          pumpDone++;
+          if (pumpDone % 25 === 0) log(`prefetch translated ${pumpDone} cues`);
+          scheduleSave();
+        })
+        .catch((error) => {
+          next.tried = (next.tried || 0) + 1;
+          log("prefetchError", String(error));
+        })
+        .then(() => {
+          next.inFlight = false;
+          pumpActive--;
+        });
+    }
+  }
+
   // Anchor the overlay to the video's rectangle, not the viewport: in
   // windowed layouts a viewport-bottom overlay sits on the player controls.
   function positionOverlay() {
-    const video = state.video || document.querySelector("video");
+    // activeVideo, not querySelector: in prefetch mode state.video is never
+    // bound, and Prime keeps dummy <video> elements with useless rects.
+    const video = state.video || activeVideo();
     const rect = video ? video.getBoundingClientRect() : null;
     if (!rect || !rect.height) {
       box.style.left = "50%";
@@ -336,6 +956,7 @@
   function setGemmaModel(model) {
     state.gemmaModel = model;
     saveSetting("gemmaModel", model);
+    flushCueTranslations();
     updateBackendButtons();
     scheduleRead();
   }
@@ -409,10 +1030,12 @@
       }
       if (changes.styleProfile && changes.styleProfile.newValue !== state.styleProfile) {
         state.styleProfile = changes.styleProfile.newValue;
+        flushCueTranslations();
         applyHideState();
         updateBackendButtons();
       }
       if (translationAffected) {
+        flushCueTranslations();
         updateBackendButtons();
         pingTranslator();
         state.lastText = "";
@@ -449,6 +1072,7 @@
     state.translatorBackend = ["gemma", "hybrid"].includes(backend) ? backend : "libre";
     saveSetting("translatorBackend", state.translatorBackend);
     state.translationCache.clear();
+    flushCueTranslations();
     updateBackendButtons();
     pingTranslator();
     scheduleRead();
@@ -506,7 +1130,7 @@
     // Same line under different preceding context can translate differently
     // (pronouns, tense), so the context participates in the key.
     const context = state.prevLines.filter((l) => l !== normalized).join("\n");
-    const cacheKey = `gemma:${state.gemmaModel}:${lang}:${effectiveStyle()}:${context.slice(-48)}:${normalized}`;
+    const cacheKey = `gemma:${state.gemmaModel}:${lang}:${effectiveStyle()}:lex${lexiconStamp}:${context.slice(-48)}:${normalized}`;
     if (state.translationCache.has(cacheKey)) {
       return state.translationCache.get(cacheKey);
     }
@@ -524,7 +1148,19 @@
         prompt: [
           `Translate the English subtitle into natural ${lang}. Reply with only the ${lang} translation of the subtitle, even if it is short or ambiguous.`,
           styleInstruction(lang),
-          ...(state.glossaryNames.length
+          // Episode lexicon (prefetch pre-pass) supersedes the reactive
+          // live-path glossary: committed spellings beat "be consistent".
+          ...(lexicon && lexicon.keepEnglish.length
+            ? [`Keep these terms in English: ${lexicon.keepEnglish.join(", ")}.`]
+            : []),
+          ...(lexicon && Object.keys(lexicon.names).length
+            ? [
+                `Use these spellings for names: ${Object.entries(lexicon.names)
+                  .map(([src, out]) => `${src} = ${out}`)
+                  .join(", ")}.`,
+              ]
+            : []),
+          ...(!lexicon && state.glossaryNames.length
             ? [`Transliterate these names consistently: ${state.glossaryNames.join(", ")}.`]
             : []),
           ...(context ? [`Previous lines (context only, do not translate):\n${context}`] : []),
@@ -616,6 +1252,36 @@
     return vids.find((v) => !v.paused && !v.ended && v.currentTime > 0) || vids[0] || null;
   }
 
+  // In prefetch mode the cue list says whether captions were even due in the
+  // silent window (≥5s of scheduled cue time = the player should have shown
+  // something). Without prefetch, assume they were — the old heuristic.
+  function scheduledCueSeconds(from, to) {
+    let due = 0;
+    for (const cue of cueList) {
+      if (cue.begin > to) break;
+      const overlap = Math.min(cueEnd(cue), to) - Math.max(cue.begin, from);
+      if (overlap > 0) due += overlap;
+    }
+    return due;
+  }
+
+  function captionsWereDue(video, silentMs) {
+    if (!prefetchOn || !cueList.length) return true;
+    if (adPlaying()) return false; // ads have no captions; clock is the ad's
+    if (cueClockUsable()) {
+      const to = video.currentTime + syncOffset;
+      return scheduledCueSeconds(to - silentMs / 1000, to) >= 5;
+    }
+    // Post-jump (ad break) the offset is untrusted: the schedule can't say
+    // anything until re-lock.
+    if (everCalibrated) return false;
+    // Never locked: offset unknown (calibration needs a caption to appear),
+    // so a quiet opening looks identical to CC-off for a while. Use the raw
+    // clock but demand much stronger evidence before nagging.
+    const to = video.currentTime;
+    return silentMs > 45000 && scheduledCueSeconds(to - silentMs / 1000, to) >= 15;
+  }
+
   function updateCaptionHint() {
     const prevHint = state.captionHint;
     state.captionHint = "";
@@ -643,7 +1309,11 @@
         show("");
       }
     } else if (Date.now() - state.lastCaptionTextAt > 20000) {
-      state.captionHint = "no subtitles found — is CC on?";
+      // With the full track in hand, a silent stretch is only suspicious if
+      // cues were actually scheduled during it; a long wordless scene is not.
+      if (captionsWereDue(video, Date.now() - state.lastCaptionTextAt)) {
+        state.captionHint = "no subtitles found — is CC on?";
+      }
     }
     if (state.captionHint) {
       statusBadge.textContent = `Translator: ${state.captionHint}`;
@@ -710,6 +1380,13 @@
       // Mirror YouTube's own caption model: lines scroll up as they complete;
       // translate whole committed lines and let the previous one linger.
       rolling: true,
+      // timedtext timestamps sit directly on the video timeline, so the cue
+      // clock is valid at offset 0 without DOM calibration (auto-captions'
+      // rolling DOM text never exactly matches a cue, so it can't calibrate).
+      trustCueClock: true,
+      // Ads play in the same <video> with their own currentTime — a trusted
+      // cue clock would paint episode lines over them.
+      adActive: () => !!document.querySelector(".ad-showing, .ad-interrupting"),
     },
     {
       hosts: ["primevideo.com", "amazon.com", "amazon.in"],
@@ -1241,6 +1918,22 @@
     if (!state.enabled) return;
     const text = extractText(state.subtitleRoot);
     if (text) state.lastCaptionTextAt = Date.now();
+    // Prefetch mode paints from the cue clock; the DOM path's only remaining
+    // job is hiding the player's own captions as they appear.
+    if (prefetchOn) {
+      if (text) calibrateSync(text);
+      if (text && !state.showOriginal) {
+        const node =
+          findSmallestMatchingDescendant(state.subtitleRoot, text) ||
+          findSubtitleNode(state.subtitleRoot, text);
+        const container =
+          node && node.closest('.shaka-text-container, [class*="caption" i]');
+        if (container) hideNode(container);
+      }
+      // Uncalibrated cue clock would paint out of sync — let the live path
+      // keep driving until the first DOM/cue match lands.
+      if (cueClockUsable()) return;
+    }
     if (siteAdapter && siteAdapter.rolling) {
       readRolling(text);
       return;
@@ -1437,6 +2130,7 @@
     button.addEventListener("click", () => {
       state.styleProfile = button.dataset.style;
       saveSetting("styleProfile", state.styleProfile);
+      flushCueTranslations();
       applyHideState(); // override may enter/exit music mode
       updateBackendButtons();
       scheduleRead();
@@ -1453,6 +2147,7 @@
     languageSelect.addEventListener("change", (event) => {
       state.targetLanguage = event.target.value;
       saveSetting("targetLanguage", state.targetLanguage);
+      flushCueTranslations();
       scheduleRead();
     });
   }

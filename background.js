@@ -12,21 +12,38 @@ async function syncRegisteredSites() {
   const existing = await chrome.scripting.getRegisteredContentScripts();
   const registered = new Set(existing.map((s) => s.id));
   for (const pattern of sitePatterns) {
-    if (registered.has(pattern)) continue;
-    try {
-      await chrome.scripting.registerContentScripts([
-        {
-          id: pattern,
-          matches: [pattern],
-          js: ["content.js"],
-          runAt: "document_idle",
-          persistAcrossSessions: true,
-        },
-      ]);
-    } catch {
-      // invalid/duplicate pattern — skip
+    // Per-script check so sites registered before the hook existed get it.
+    for (const script of siteScripts(pattern)) {
+      if (registered.has(script.id)) continue;
+      try {
+        await chrome.scripting.registerContentScripts([script]);
+      } catch {
+        // invalid/duplicate pattern — skip
+      }
     }
   }
+}
+
+// Each site gets two scripts: the pipeline (isolated world) and the
+// network hook (MAIN world, document_start) that spots subtitle tracks.
+function siteScripts(pattern) {
+  return [
+    {
+      id: pattern,
+      matches: [pattern],
+      js: ["content.js"],
+      runAt: "document_idle",
+      persistAcrossSessions: true,
+    },
+    {
+      id: `${pattern}#hook`,
+      matches: [pattern],
+      js: ["pagehook.js"],
+      runAt: "document_start",
+      world: "MAIN",
+      persistAcrossSessions: true,
+    },
+  ];
 }
 chrome.runtime.onInstalled.addListener(syncRegisteredSites);
 chrome.runtime.onStartup.addListener(syncRegisteredSites);
@@ -39,18 +56,17 @@ chrome.action.onClicked.addListener(async (tab) => {
   const granted = await chrome.permissions.request({ origins: [originPattern] });
   if (!granted) return;
   try {
-    await chrome.scripting.registerContentScripts([
-      {
-        id: originPattern,
-        matches: [originPattern],
-        js: ["content.js"],
-        runAt: "document_idle",
-        persistAcrossSessions: true,
-      },
-    ]);
+    await chrome.scripting.registerContentScripts(siteScripts(originPattern));
   } catch {
     // already registered for this origin
   }
+  // Immediate injection for this visit; the hook only catches tracks
+  // requested after this point — a reload picks up document_start timing.
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    files: ["pagehook.js"],
+    world: "MAIN",
+  });
   await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
 });
 

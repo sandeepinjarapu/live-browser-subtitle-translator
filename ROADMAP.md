@@ -25,18 +25,24 @@ This document is the single place where features are proposed, evaluated, and se
 | Translation quality pass — **SHIPPED (0.4.0–0.4.4)** | Two-line previous context (context-aware caching; A/B-verified it resolves verb ellipsis across speaker turns), recurring-name glossary, auto-caption filler/tag stripping, pause-cut prefix merging, and style profiles (Auto from YT category / Formal / Casual; music mode shows original lyrics untranslated). **Deferred:** surface what Auto detected (badge/panel showing "Auto → formal (Education)") so mis-detection is distinguishable from model limits; add content-type profiles (explainer = casual register + English tech terms; documentary auto-mapping) only when a watched genre demonstrably fails both existing profiles. | Done |
 | Package for Chrome Web Store | Versioned releases instead of load-unpacked; required before anyone else can use it | Easy, plus review process |
 
-## v2 — Subtitle prefetch (the big one)
+## v2 — Subtitle prefetch — **SHIPPED (0.5.0–0.5.26, prefetch branch, merged 2026-06)**
 
-**Idea:** streaming players download the full subtitle track (TTML/WebVTT) before playback. Intercept that file, translate the whole episode in the background, then display each translated line at the exact moment the original appears. Zero perceived latency; streaming/linger tricks become unnecessary.
+**Idea:** streaming players download the full subtitle track (TTML/WebVTT) before playback. Intercept that file, translate the whole episode in the background, then display each translated line at the exact moment the original appears. Zero perceived latency.
 
-**Feasibility — promising but the hard parts are real:**
+**What got built (field-tested on Prime, Netflix, YouTube, JioHotstar):**
 
-- *Interception:* content scripts can't read other requests' bodies. Needs either a page-injected fetch/XHR hook or re-requesting the subtitle URL ourselves once spotted. Prime's TTML URLs are signed but re-fetchable from the same session. Per-OTT work.
-- *Timing:* TTML carries begin/end timestamps; sync against `video.currentTime`. Solid.
-- *Throughput:* a 40-min episode is ~500–800 lines; e2b at ~0.7 s/line ≈ 7–9 min for the full track. Translate in playback order so the overlay stays ahead of the viewer within the first minutes; cache to disk so rewatches are instant.
-- *Risk:* DRM does not block this (subtitles aren't encrypted), but each OTT formats and delivers tracks differently, and ToS for intercepting traffic should be reviewed before publishing.
+- *Interception:* MAIN-world `pagehook.js` (document_start) wraps fetch/XHR and sniffs response **bodies by format, not URLs/sites** — five kinds: vtt, ttml-text, ttml-mp4 (TTML inside stpp fMP4), yt-json (timedtext json3), timedtext-xml. Prime's Range-windowed track URL re-fetched with a plain GET returns the full episode (the "signed but re-fetchable" bet held). Netflix/Hotstar/YouTube deliver complete files unprompted — zero special-casing for Netflix and Hotstar.
+- *Timing:* cue clock (200 ms scheduler vs `video.currentTime`) **self-calibrates** against the player's own DOM captions (median-of-5 offsets, ≥12-char anchors, one sample per caption at first sighting, full re-lock on timeline jumps from ads/source swaps). YouTube trusts the cue clock natively (`trustCueClock`) and gates around ads (`adActive`).
+- *Throughput:* translate-ahead pump in playback order with wrap-around (whole episode always finishes, ~4 min wall for a 45-min episode at concurrency 2), focused-window-only to protect the single local GPU, per-cue retry caps, English-original stopgap until each translation lands.
+- *Quality (prefetch-only unlocks):* **episode lexicon pre-pass** — one Gemma call over a script sample commits keep-English terms and name spellings for every prompt (A/B-verified register improvement); speaker-turn line breaks preserved end-to-end; per-speaker-line translation.
+- *Persistence:* translations + lexicon cached to `chrome.storage.local` for 24h, keyed by track/language/model; settings changes flush and re-key; SPA navigation tears down all prefetch state.
+- *Hint regimes:* the "captions off?" badge consults the cue schedule (silence per the track is not suspicious), suppresses during re-lock and ads.
 
-**Verdict: feasible, highest-value item on the list. Prototype on Prime first; keep DOM-scraping as the fallback path.**
+**Lesson of the branch:** nearly every field bug was a *state-lifetime* bug — prefetch introduced long-lived state (two clocks, two episodes, disk caches, multi-window contention) the live path never had.
+
+**Economics confirmed:** sequential local pump is optimal for one GPU; a server flips to parallel/batch + shared cache — this is the architecture for the TV-product path. ToS review of track interception still required before any distribution.
+
+**Deferred:** segmented-HLS sites (cues trail playhead → "prefetch-lite"; upgrade is fetching the subtitle playlist ourselves, per-site); "gentle mode" concurrency-1 thermal option; detached-DevTools focus pauses the pump (known quirk).
 
 ## v3 — Multi-OTT support
 
@@ -44,10 +50,10 @@ Each service needs three things audited: (a) can we *find* the subtitle text (DO
 
 | OTT | Expected difficulty | Notes |
 |---|---|---|
-| Prime Video | **Supported** (verified 2026-06) | Both native Prime titles and MX-Player-sourced shows confirmed working (earlier "image/canvas" suspicion not reproduced on retest with 0.4.x). Keep an eye out for stray titles that render subtitles without DOM text — those become prefetch targets |
-| Netflix | **Supported** (verified 2026-06) | Subtitles in `.player-timedtext` — adapter added 0.4.1; DRM blacks out video capture but subtitle text stays DOM-readable. Track files (TTML) fetched per language — still a good prefetch candidate |
-| JioHotstar | **Supported** (probe-verified 2026-06) | Shaka Player; subtitles in `.shaka-text-container` — selector added to the extension |
-| YouTube | **Supported** (yt-exploration, merged 2026-06) | First rolling-caption site: adapter `rolling: true` enables commit-based translation (whole lines only), a 2-line animated rolling overlay, warm-ahead speculation (one in-flight request, self-pacing for slow models), `>>` speaker-marker handling, and an exact "subtitles off" badge hint from the CC button. Future rolling-caption sites opt in via the same flag. Live-path latency floor reached; further gains belong to v2 prefetch. |
+| Prime Video | **Prefetch** (verified 2026-06) | ttml-mp4 (stpp fMP4) over Range windows; full-track plain-GET re-fetch; DOM-calibrated cue clock. Live path remains the fallback tier |
+| Netflix | **Prefetch** (verified 2026-06) | Single ttml-text file covering the whole title; zero site-specific code — the generic pipeline classified and handled it. Live `.player-timedtext` adapter remains the fallback |
+| JioHotstar | **Prefetch** (verified 2026-06) | Single full WebVTT; entity decoding; calibration locked at −0.40 s. Shaka `.shaka-text-container` live path remains the fallback |
+| YouTube | **Prefetch** (verified 2026-06) | timedtext json3/XML; trusted cue clock (offset 0), ad gating, ASR cleanup. Rolling live path (yt-exploration) remains the fallback for CC-never-enabled videos |
 | Zee5, SonyLIV, MX Player | Unknown, likely medium | Indian OTTs vary; several use standard HLS/DASH with WebVTT; any Shaka-based player is now covered |
 | Apple TV+ (web) | Hard | Heavy canvas/custom rendering in places; Safari-first audience |
 | aha, SUNNXT, Eros Now, Lionsgate Play | Unknown | Audit pass needed |
