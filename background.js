@@ -12,11 +12,14 @@ async function syncRegisteredSites() {
   const existing = await chrome.scripting.getRegisteredContentScripts();
   const registered = new Set(existing.map((s) => s.id));
   for (const pattern of sitePatterns) {
-    if (registered.has(pattern)) continue;
-    try {
-      await chrome.scripting.registerContentScripts(siteScripts(pattern));
-    } catch {
-      // invalid/duplicate pattern — skip
+    // Per-script check so sites registered before the hook existed get it.
+    for (const script of siteScripts(pattern)) {
+      if (registered.has(script.id)) continue;
+      try {
+        await chrome.scripting.registerContentScripts([script]);
+      } catch {
+        // invalid/duplicate pattern — skip
+      }
     }
   }
 }
