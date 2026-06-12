@@ -249,8 +249,8 @@
     if (event.data.source === "lst-track-candidate") return;
     if (event.data.source !== "lst-track") return;
     const { url, contentType, kind, body } = event.data;
-    if (state.tracks.some((t) => t.url === url && t.body.length === body.length)) return;
-    state.tracks.push({ url, contentType, kind, at: Date.now() });
+    if (state.tracks.some((t) => t.url === url && t.size === body.length)) return;
+    state.tracks.push({ url, contentType, kind, size: body.length, at: Date.now() });
     const added = parseTtmlCues(body);
     const times = [...cues.values()].map((c) => c.begin);
     log(
