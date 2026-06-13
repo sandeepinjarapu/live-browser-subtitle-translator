@@ -483,6 +483,11 @@
     return parseTtmlCues(body);
   }
 
+  // Complete-file subtitle kinds (a single track spans the whole episode).
+  // Distinct from segmented kinds (vtt HLS chunks, fragmented ttml-mp4) which
+  // arrive many-per-episode — only these gate the episode-identity reset below.
+  const FULL_TRACK_KINDS = new Set(["ttml-text", "yt-json", "timedtext-xml"]);
+
   window.addEventListener("message", (event) => {
     if (event.source !== window || !event.data) return;
     if (event.data.source === "lst-track-candidate") return;
@@ -498,10 +503,16 @@
     // ~1s later, after the merge. So tear down here, at ingest, when the new
     // track's storage key differs from the established one. Same-episode
     // re-fetches (windowed→full) reuse the path, so they don't trip this.
-    if (trackKey && cues.size) {
+    //
+    // Gated to full-file kinds only. Segmented delivery (HLS/DASH VTT chunks,
+    // fragmented ttml-mp4 — see the lst-fetch-track re-request below) yields
+    // many distinct-path tracks per episode, so a path change there is a
+    // continuation, not a new episode; resetting on those would break
+    // segmented players. Every same-URL swap we've observed is a complete file.
+    if (trackKey && cues.size && FULL_TRACK_KINDS.has(kind)) {
       const incomingKey = trackStorageKey(url);
       if (incomingKey && incomingKey !== trackKey) {
-        resetPrefetch("episode swap (track identity changed)");
+        resetPrefetch("episode swap (full-track identity changed)");
       }
     }
     if (state.tracks.some((t) => t.url === url && t.size === body.length)) return;
