@@ -1453,6 +1453,7 @@
     if (state.captionHint !== prevHint) log("captionHint", state.captionHint || "(cleared)");
   }
 
+  let pingFailStreak = 0;
   async function pingTranslator() {
     if (!state.enabled) {
       statusBadge.textContent = "Translator: off";
@@ -1460,29 +1461,51 @@
       return;
     }
     if (state.captionHint) return; // the hint owns the badge while active
-    const check = async (url) => {
-      const res = await bgFetch(url, { cache: "no-store" });
-      if (!res.ok) throw new Error(String(res.status));
-    };
+    // The probe shares the service worker with the prefetch translate flood,
+    // so a single round-trip can be starved/dropped under load. Time out a
+    // hung probe so the 5s loop stays healthy, and only declare offline after
+    // two consecutive failures — a lone transient drop must not flap the badge.
+    const check = (url) =>
+      Promise.race([
+        bgFetch(url, { cache: "no-store" }).then((res) => {
+          if (!res.ok) throw new Error(String(res.status));
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 4000)),
+      ]);
     const libreUrl = "http://127.0.0.1:5000/health";
     const gemmaUrl = "http://127.0.0.1:11434/api/tags";
+    let connected, label;
     if (state.translatorBackend === "hybrid") {
       const [libreOk, gemmaOk] = await Promise.all([
         check(libreUrl).then(() => true, () => false),
         check(gemmaUrl).then(() => true, () => false),
       ]);
-      if (libreOk && gemmaOk) setStatus("Translator: hybrid connected", true);
-      else if (libreOk) setStatus("Translator: Gemma offline", false);
-      else if (gemmaOk) setStatus("Translator: Libre offline", false);
-      else setStatus("Translator: offline", false);
-      return;
+      connected = libreOk && gemmaOk;
+      label = connected
+        ? "Translator: hybrid connected"
+        : libreOk
+        ? "Translator: Gemma offline"
+        : gemmaOk
+        ? "Translator: Libre offline"
+        : "Translator: offline";
+    } else {
+      const gemma = state.translatorBackend === "gemma";
+      connected = await check(gemma ? gemmaUrl : libreUrl).then(() => true, () => false);
+      label = connected
+        ? gemma
+          ? "Translator: Gemma connected"
+          : "Translator: connected"
+        : gemma
+        ? "Translator: Gemma offline"
+        : "Translator: offline";
     }
-    try {
-      await check(state.translatorBackend === "gemma" ? gemmaUrl : libreUrl);
-      setStatus(state.translatorBackend === "gemma" ? "Translator: Gemma connected" : "Translator: connected", true);
-    } catch {
-      setStatus(state.translatorBackend === "gemma" ? "Translator: Gemma offline" : "Translator: offline", false);
+    if (connected) {
+      pingFailStreak = 0;
+      setStatus(label, true);
+    } else if (++pingFailStreak >= 2) {
+      setStatus(label, false);
     }
+    // else: a single transient failure — keep the last (good) badge.
   }
 
   // Known sites get pinned selectors (zero blast radius between sites);
