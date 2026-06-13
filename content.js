@@ -602,6 +602,7 @@
       }),
     });
     if (!response.ok) throw new Error(`ollama ${response.status}`);
+    lastGemmaOkAt = Date.now();
     const data = JSON.parse(response.body);
     return (data && data.response) || "";
   }
@@ -1243,6 +1244,7 @@
     if (!response.ok) {
       throw new Error(`translation server returned ${response.status}`);
     }
+    lastLibreOkAt = Date.now();
 
     const data = JSON.parse(response.body);
     const translated = (data && data.translated ? String(data.translated) : "").trim();
@@ -1340,6 +1342,7 @@
         }
         if (msg.done) {
           settled = true;
+          lastGemmaOkAt = Date.now();
           clearTimeout(watchdog);
           port.disconnect();
           resolve(acc);
@@ -1454,6 +1457,8 @@
   }
 
   let pingFailStreak = 0;
+  let lastLibreOkAt = 0;
+  let lastGemmaOkAt = 0;
   async function pingTranslator() {
     if (!state.enabled) {
       statusBadge.textContent = "Translator: off";
@@ -1461,24 +1466,27 @@
       return;
     }
     if (state.captionHint) return; // the hint owns the badge while active
-    // The probe shares the service worker with the prefetch translate flood,
-    // so a single round-trip can be starved/dropped under load. Time out a
-    // hung probe so the 5s loop stays healthy, and only declare offline after
-    // two consecutive failures — a lone transient drop must not flap the badge.
-    const check = (url) =>
+    // A backend that translated a cue in the last 12s is demonstrably reachable
+    // — trust that over a /health probe, which shares the service worker with
+    // the prefetch translate flood and gets starved/dropped under load (a false
+    // "offline" while subtitles are clearly translating). Only when a backend
+    // has gone quiet do we actually probe it.
+    const RECENT = 12000;
+    const libreLive = Date.now() - lastLibreOkAt < RECENT;
+    const gemmaLive = Date.now() - lastGemmaOkAt < RECENT;
+    // Probe (timed out so a hung round-trip can't stall the 5s loop).
+    const probe = (url) =>
       Promise.race([
-        bgFetch(url, { cache: "no-store" }).then((res) => {
-          if (!res.ok) throw new Error(String(res.status));
-        }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 4000)),
-      ]);
+        bgFetch(url, { cache: "no-store" }).then((res) => res.ok),
+        new Promise((resolve) => setTimeout(() => resolve(false), 4000)),
+      ]).catch(() => false);
     const libreUrl = "http://127.0.0.1:5000/health";
     const gemmaUrl = "http://127.0.0.1:11434/api/tags";
     let connected, label;
     if (state.translatorBackend === "hybrid") {
       const [libreOk, gemmaOk] = await Promise.all([
-        check(libreUrl).then(() => true, () => false),
-        check(gemmaUrl).then(() => true, () => false),
+        libreLive ? Promise.resolve(true) : probe(libreUrl),
+        gemmaLive ? Promise.resolve(true) : probe(gemmaUrl),
       ]);
       connected = libreOk && gemmaOk;
       label = connected
@@ -1490,7 +1498,8 @@
         : "Translator: offline";
     } else {
       const gemma = state.translatorBackend === "gemma";
-      connected = await check(gemma ? gemmaUrl : libreUrl).then(() => true, () => false);
+      const live = gemma ? gemmaLive : libreLive;
+      connected = live ? true : await probe(gemma ? gemmaUrl : libreUrl);
       label = connected
         ? gemma
           ? "Translator: Gemma connected"
