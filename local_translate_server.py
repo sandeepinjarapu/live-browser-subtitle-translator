@@ -62,7 +62,12 @@ def translate_text(text: str) -> str:
 
 class Handler(BaseHTTPRequestHandler):
     def _origin_ok(self) -> bool:
-        return self.headers.get("Origin") == ALLOWED_ORIGIN
+        # Block only when an Origin is present and wrong. Browsers always attach
+        # Origin on cross-origin requests (even no-cors), so a malicious page is
+        # rejected; an Origin-less request is the extension's own service-worker
+        # GET (e.g. /health), which Chrome sends without an Origin header.
+        origin = self.headers.get("Origin")
+        return origin is None or origin == ALLOWED_ORIGIN
 
     def _cors(self):
         # Reflect only the one allowed origin — never "*".
