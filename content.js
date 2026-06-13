@@ -489,6 +489,21 @@
     if (event.data.source !== "lst-track") return;
     const { url, contentType, kind, body } = event.data;
     if (typeof body !== "string" || !url) return; // foreign window message
+    // Episode-identity guard (generic, not Prime-specific): on next/autoplay
+    // swaps the player loads a new episode under a STABLE href, so the tick's
+    // navigation reset never fires and the new track's cues merge into the old
+    // episode's — the cross-episode corruption. The earliest signal of a swap
+    // is the incoming track's own content path (its per-episode UUID lives in
+    // the pathname); the <video> element, currentSrc, and duration only flip
+    // ~1s later, after the merge. So tear down here, at ingest, when the new
+    // track's storage key differs from the established one. Same-episode
+    // re-fetches (windowed→full) reuse the path, so they don't trip this.
+    if (trackKey && cues.size) {
+      const incomingKey = trackStorageKey(url);
+      if (incomingKey && incomingKey !== trackKey) {
+        resetPrefetch("episode swap (track identity changed)");
+      }
+    }
     if (state.tracks.some((t) => t.url === url && t.size === body.length)) return;
     state.tracks.push({ url, contentType, kind, size: body.length, at: Date.now() });
     // EPISODE-DIAG (temporary — remove before merge)
