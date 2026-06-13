@@ -40,8 +40,8 @@ The repo crossed from "local script" into "security-sensitive local agent." The 
 
 | # | Finding | Evidence | Personal severity | Release severity |
 |---|---|---|---|---|
-| S1 | `OLLAMA_ORIGINS` includes `chrome-extension://*` → any installed extension can drive local Ollama | [plist:11](launchd/com.subtitle-translator.ollama-env.plist:11) | **Worth fixing now** (pin to extension ID; cheap, no UX change) | High |
-| S2 | Libre server: wildcard CORS + unauthenticated `/translate` → any visited site can use the local translator as an inference endpoint | [local_translate_server.py:61](local_translate_server.py:61),[:80](local_translate_server.py:80) | Low (borrows compute, sees own text) — token eventually | Blocker |
+| S1 | `OLLAMA_ORIGINS` includes `chrome-extension://*` → any installed extension can drive local Ollama | [plist:11](launchd/com.subtitle-translator.ollama-env.plist:11) | **FIXED 2026-06-13** — pinned to the extension ID *only* (the OTT web origins were vestigial: all backend traffic is proxied through the SW, which sends the extension origin, [background.js:1-3](background.js:1)). Verified: extension allowed, web + foreign-extension origins rejected | Done |
+| S2 | Libre server: wildcard CORS + unauthenticated `/translate` → any visited site can use the local translator as an inference endpoint | [local_translate_server.py](local_translate_server.py) | **FIXED 2026-06-13** — server now enforces `Origin == ` the extension origin (403 + denied preflight otherwise) and reflects only that origin in CORS, never `*`. Browsers forbid pages from spoofing `Origin`, so this fully closes the stated "any visited site" threat. A pre-shared token (defense vs *local non-browser* processes, which can forge `Origin`) is **deferred to onboarding** — a static load-unpacked extension has no out-of-band channel to receive a per-install secret, so a token now would be redundant or forgeable | Done (token → onboarding) |
 | S3 | Forged `lst-track` via `postMessage("*")` → page can poison parser/cache/prefetch | [pagehook.js:43](pagehook.js:43),[content.js:489](content.js:489) | Low (hostile page already controls the DOM; nonce is hygiene) | High — nonce/MessageChannel before release |
 | S4 | Page `localStorage` drives backend/model/settings | [content.js:30-42](content.js:30) | Low (blast radius = which local model runs) | Medium — fold into `chrome.storage` migration |
 | S5 | Server resource exposure: unbounded cache, trusts Content-Length, body cap after materialization | [local_translate_server.py:18](local_translate_server.py:18),[pagehook.js:81](pagehook.js:81) | Low (own machine) | Medium |
@@ -51,7 +51,9 @@ The repo crossed from "local script" into "security-sensitive local agent." The 
 
 **Tripwire (re-evaluate everything above if this trips):** the prompt-injection calculus *inverts* the moment the model gains any capability — file access, tools, shell, clipboard, "summarize my files," API keys, output used as config/code. None on the roadmap today. If one appears, prompt injection escalates from "borrows compute" to "real," and a tool-permission layer (allowlist + user confirmation + sandboxing) becomes mandatory.
 
-**Sequencing:** S1 + S2(token) are the only items worth touching ahead of the existing roadmap. S3/S4/S5/S6 are a pre-release checklist that naturally rides along with the v1 settings work and Web Store packaging (already ToS-gated) — they are not present-tense fires for personal use.
+**Sequencing:** S1 + S2 **done 2026-06-13** (origin-pinned on both backends; verified). S3/S4/S5/S6 are a pre-release checklist that naturally rides along with the v1 settings work and Web Store packaging (already ToS-gated) — they are not present-tense fires for personal use. The S2 pre-shared **token is an onboarding deliverable** (needs a paste UX to reach a load-unpacked extension); when built, surface it in the same flow.
+
+**Token defers to onboarding (why):** origin enforcement closes the browser threat completely because pages can't forge `Origin`. A token only adds defense against a local *non-browser* process — but that attacker can forge `Origin` too, so the token must be a real pre-shared secret delivered out-of-band (user paste). No secure channel exists until onboarding, so the token lands there, not now.
 
 ## Process
 
