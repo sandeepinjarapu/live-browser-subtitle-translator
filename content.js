@@ -517,15 +517,6 @@
     }
     if (state.tracks.some((t) => t.url === url && t.size === body.length)) return;
     state.tracks.push({ url, contentType, kind, size: body.length, at: Date.now() });
-    // EPISODE-DIAG (temporary — remove before merge)
-    log(
-      "EPISODE-DIAG track arrived:",
-      kind,
-      "urlbase=…" + String(url).split("?")[0].slice(-44),
-      "bodyLen=" + body.length,
-      "existingCues=" + cues.size,
-      "prefetch=" + (prefetchOn ? "ON" : "off")
-    );
     const added = parseTrack(body, kind);
     rebuildCueList();
     if (!trackKey) trackKey = trackStorageKey(url);
@@ -869,29 +860,6 @@
   // playback advance to wall clock per tick and re-calibrate on any jump.
   let lastTickTime = 0;
   let lastTickAt = 0;
-
-  // EPISODE-DIAG (temporary — remove before merge): log the candidate
-  // episode-identity signals whenever any of them changes, so we can see what
-  // actually flips on a same-URL Prime episode swap before designing the reset.
-  let __diagSig = "";
-  setInterval(() => {
-    const v = activeVideo() || document.querySelector("video");
-    if (v && !v.__diagId) v.__diagId = Math.random().toString(36).slice(2, 7);
-    const sig = [
-      "href=…" + location.href.slice(-36),
-      "src=…" + String((v && v.currentSrc) || "").slice(-28),
-      "dur=" + (v && v.duration ? Math.round(v.duration) : "?"),
-      "vid=" + (v ? v.__diagId : "none"),
-      "cues=" + cues.size,
-      "tracks=" + state.tracks.length,
-      "key=…" + (trackKey || "").slice(-20),
-      "prefetch=" + (prefetchOn ? "ON" : "off"),
-    ].join("  ");
-    if (sig !== __diagSig) {
-      __diagSig = sig;
-      log("EPISODE-DIAG", sig);
-    }
-  }, 1000);
 
   setInterval(() => {
     if (location.href !== prefetchHref) resetPrefetch("navigation");
