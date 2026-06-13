@@ -34,6 +34,25 @@ The probe (content.js `probeChannels`, 0.5.32) reports the first three on every 
 | 14 | A caption-classed element with text is the caption container | **Violated** 2026-06-12, SUNNXT (Shaka): the player's CC toggle button (`shaka-caption-button`, text "closed_caption") outscored the real container — control bars are full of caption-classed *controls*. Fixed 0.5.34: interactive elements (`button`, `[role=button]`) excluded from root candidacy; CC-status labels added to generic noise. *Process note:* first diagnosed remotely as browser-rendered native cues (0.5.33) — wrong; the user's probe line (`native[none] dom[shaka-caption-button] net[none]`) corrected it. The probe paid for itself on day one. The 0.5.33 `video::cue` hiding and ≥10-cue native gate stay as channel-1 defenses, currently unexercised in the field. Fix field-verified on SUNNXT 2026-06-12 |
 | 13 | Burned-in subtitles are out of scope | **Accepted limitation** (channel 4). OCR-or-nothing; affects Apple TV+ in places. Probe reports "no channel found" — onboarding must set this expectation honestly |
 
+## Security posture (interim assessment 2026-06-13)
+
+The repo crossed from "local script" into "security-sensitive local agent." The one durable rule, true regardless of distribution: **the local model is a privileged resource, and any web page that can shape its prompts or call its endpoints is part of the threat model.** Findings below are accurate (each verified against the cited line); the *severity* depends on the distribution stage. "Personal" = single-user, load-unpacked, localhost-only (today). "Release" = anyone installs it (Web Store, gated on ToS review).
+
+| # | Finding | Evidence | Personal severity | Release severity |
+|---|---|---|---|---|
+| S1 | `OLLAMA_ORIGINS` includes `chrome-extension://*` → any installed extension can drive local Ollama | [plist:11](launchd/com.subtitle-translator.ollama-env.plist:11) | **Worth fixing now** (pin to extension ID; cheap, no UX change) | High |
+| S2 | Libre server: wildcard CORS + unauthenticated `/translate` → any visited site can use the local translator as an inference endpoint | [local_translate_server.py:61](local_translate_server.py:61),[:80](local_translate_server.py:80) | Low (borrows compute, sees own text) — token eventually | Blocker |
+| S3 | Forged `lst-track` via `postMessage("*")` → page can poison parser/cache/prefetch | [pagehook.js:43](pagehook.js:43),[content.js:489](content.js:489) | Low (hostile page already controls the DOM; nonce is hygiene) | High — nonce/MessageChannel before release |
+| S4 | Page `localStorage` drives backend/model/settings | [content.js:30-42](content.js:30) | Low (blast radius = which local model runs) | Medium — fold into `chrome.storage` migration |
+| S5 | Server resource exposure: unbounded cache, trusts Content-Length, body cap after materialization | [local_translate_server.py:18](local_translate_server.py:18),[pagehook.js:81](pagehook.js:81) | Low (own machine) | Medium |
+| S6 | `http://*/*` optional permission; broad Amazon/OTT static matches | [manifest.json:7](manifest.json:7),[:29](manifest.json:29) | Low | Medium — shrinks the Web Store review surface |
+
+**Prompt injection — contained by design, do NOT build a detector.** Model output ([content.js:1274](content.js:1274)) is rendered as overlay text only — never executed, no shell/file/tool/agent access. A malicious subtitle produces *text*, not actions. Detection is brittle and real subtitles legitimately contain commands/URLs → false positives without security. Correct posture: treat subtitles as hostile *data*, keep the model *capability-free*, cap resources (length/cue/context), don't filter content.
+
+**Tripwire (re-evaluate everything above if this trips):** the prompt-injection calculus *inverts* the moment the model gains any capability — file access, tools, shell, clipboard, "summarize my files," API keys, output used as config/code. None on the roadmap today. If one appears, prompt injection escalates from "borrows compute" to "real," and a tool-permission layer (allowlist + user confirmation + sandboxing) becomes mandatory.
+
+**Sequencing:** S1 + S2(token) are the only items worth touching ahead of the existing roadmap. S3/S4/S5/S6 are a pre-release checklist that naturally rides along with the v1 settings work and Web Store packaging (already ToS-gated) — they are not present-tense fires for personal use.
+
 ## Process
 
 - Every "Try on this site" field test: read the probe line, update this ledger if it confirms or violates an entry.
